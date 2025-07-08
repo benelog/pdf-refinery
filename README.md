@@ -1,6 +1,6 @@
-# PDF Refinery CLI
+# PDF Refinery
 
-> 💡 **Project in Planning Stage**
+> **Project in Planning Stage**
 >
 > This project is currently in the planning and design phase. The features described in this README are the intended goals, but the code is not yet implemented. Stay tuned for updates!
 > 
@@ -17,7 +17,7 @@ This tool is for anyone who wants to digitize their library. If you scan your bo
 
 ## Features
 
-### 🔍 AI-Powered OCR
+### AI-Powered OCR
 
 Transform your image-based PDFs into fully searchable documents. PDF Refinery integrates with leading AI models to provide high-accuracy text recognition.
 
@@ -27,7 +27,7 @@ Transform your image-based PDFs into fully searchable documents. PDF Refinery in
       * Upstage OCR API
   * **Simple Execution:** A single command is all it takes to make your entire PDF searchable.
 
-### 🗜️ Advanced Size Optimization
+### Advanced Size Optimization
 
 Take full control over your PDF file sizes without sacrificing quality.
 
