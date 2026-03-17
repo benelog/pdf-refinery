@@ -6,7 +6,7 @@ import fitz
 import pytest
 
 from pdf_refinery.ocr_engine import OcrResult
-from pdf_refinery.pdf_writer import overlay_text_on_page
+from pdf_refinery.pdf_writer import overlay_text_on_page, remove_text_layer
 
 
 def _make_page():
@@ -81,4 +81,29 @@ class TestOverlayTextOnPage:
         doc, page = _make_page()
         count = overlay_text_on_page(page, sample_ocr_results, image_width=612, image_height=792)
         assert count == 2
+        doc.close()
+
+
+class TestRemoveTextLayer:
+    def test_no_text_returns_false(self):
+        doc, page = _make_page()
+        assert remove_text_layer(page) is False
+        doc.close()
+
+    def test_removes_existing_text(self):
+        doc, page = _make_page()
+        page.insert_text(fitz.Point(100, 200), "Existing text", fontsize=12)
+        assert page.get_text().strip() == "Existing text"
+
+        assert remove_text_layer(page) is True
+        assert page.get_text().strip() == ""
+        doc.close()
+
+    def test_removes_invisible_text(self):
+        doc, page = _make_page()
+        page.insert_text(fitz.Point(100, 200), "Hidden", fontsize=12, render_mode=3)
+        assert page.get_text().strip() == "Hidden"
+
+        assert remove_text_layer(page) is True
+        assert page.get_text().strip() == ""
         doc.close()

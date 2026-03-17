@@ -5,6 +5,23 @@ import fitz
 from pdf_refinery.ocr_engine import OcrResult
 
 
+def remove_text_layer(page: fitz.Page) -> bool:
+    """Remove existing text from a PDF page, keeping images intact.
+
+    Returns:
+        True if text was found and removed, False otherwise.
+    """
+    text_dict = page.get_text("dict")
+    has_text = False
+    for block in text_dict["blocks"]:
+        if block["type"] == 0:  # text block
+            has_text = True
+            page.add_redact_annot(fitz.Rect(block["bbox"]), fill=False)
+    if has_text:
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+    return has_text
+
+
 def overlay_text_on_page(
     page: fitz.Page,
     ocr_results: list[OcrResult],

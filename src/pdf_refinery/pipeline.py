@@ -7,7 +7,7 @@ import click
 
 from pdf_refinery.ocr_engine import OcrEngine
 from pdf_refinery.pdf_reader import open_pdf, page_to_image
-from pdf_refinery.pdf_writer import overlay_text_on_page
+from pdf_refinery.pdf_writer import overlay_text_on_page, remove_text_layer
 
 
 def parse_page_range(pages_str: str, total_pages: int) -> list[int]:
@@ -74,6 +74,9 @@ def run_ocr_pipeline(
     with click.progressbar(page_indices, label="OCR progress") as bar:
         for page_idx in bar:
             page = doc[page_idx]
+
+            # Remove existing text layer to avoid duplication
+            remove_text_layer(page)
 
             # Render page to image
             image = page_to_image(page, dpi=dpi)
