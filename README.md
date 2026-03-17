@@ -1,48 +1,32 @@
 # PDF Refinery
 
-> **Project in Planning Stage**
->
-> This project is currently in the planning and design phase. The features described in this README are the intended goals, but the code is not yet implemented. Stay tuned for updates!
->
+[](https://github.com/benelog/pdf-refinery/actions/workflows/test.yml)
 [](https://github.com/benelog/pdf-refinery)
 [](https://opensource.org/licenses/MIT)
 
-A command-line tool that transforms your scanned book PDFs into fully searchable documents using AI-powered OCR.
-
-## Purpose
-
-This tool is for anyone who scans their physical books to PDF. PDF Refinery applies AI-powered OCR to turn those image-based scans into searchable e-books with a single command.
-
------
+A command-line tool that transforms your scanned book PDFs into fully searchable documents using [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR).
 
 ## Features
 
-### AI-Powered OCR
-
-Transform your image-based PDFs into fully searchable documents. PDF Refinery integrates with leading AI models to provide high-accuracy text recognition.
-
-  * **Multiple Provider Options:** Choose the OCR engine that best fits your needs.
-      * OpenAI API (GPT-4o)
-      * Google Gemini AI
-      * Upstage OCR API
-  * **Simple Execution:** A single command is all it takes to make your entire PDF searchable.
+- **PaddleOCR Engine:** Industry-leading OCR with 111 language support
+- **Invisible Text Layer:** Original appearance preserved with searchable/selectable text overlay
+- **Simple Execution:** A single command is all it takes to make your entire PDF searchable
 
 -----
 
+## Requirements
+
+- Python 3.10+
+
 ## Installation
 
-*(This is a placeholder section. You will need to provide the actual installation command based on your packaging choice, e.g., PyPI, Homebrew, etc.)*
-
 ```bash
-# Example for pip installation
 pip install pdf-refinery
 ```
 
 -----
 
 ## Usage
-
-The tool is operated through a straightforward command-line interface.
 
 ### Basic Syntax
 
@@ -52,34 +36,46 @@ pdf-refinery ocr [options] <input_file.pdf>
 
 ### Examples
 
-Make your scanned PDF searchable using the Gemini AI API. The output will be saved as `searchable_book.pdf`.
-
 ```bash
-pdf-refinery ocr --api gemini --output searchable_book.pdf "My Scanned Book.pdf"
+# Basic usage - output saved as scanned_book_ocr.pdf
+pdf-refinery ocr scanned_book.pdf
+
+# Specify output file and language
+pdf-refinery ocr -l korean --output searchable.pdf scanned_book.pdf
+
+# Multiple languages (e.g., Korean + English mixed document)
+pdf-refinery ocr -l korean -l en scanned_book.pdf
+
+# Process specific pages with verbose output
+pdf-refinery ocr --pages "1-10" --verbose scanned_book.pdf
 ```
 
-  * Supported APIs for the `--api` flag: `openai`, `gemini`, `upstage`.
+### Options
 
------
-
-## Configuration
-
-To use the OCR features, you need to configure your API keys. Create a `.env` file in your home directory (`~/.env`) or the project directory and add your keys:
-
-```
-# .env file
-OPENAI_API_KEY="your-openai-api-key"
-GEMINI_API_KEY="your-gemini-api-key"
-UPSTAGE_API_KEY="your-upstage-api-key"
-```
-
-The tool will automatically load these keys when you run an OCR command.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-o, --output` | `<input>_ocr.pdf` | Output file path |
+| `-l, --lang` | `en` | OCR language code, repeatable (`-l korean -l en`) |
+| `--dpi` | `300` | DPI for page rendering |
+| `--pages` | all | Page range (e.g., `"1-10"`, `"1,3,5"`) |
+| `--confidence` | `0.5` | Minimum confidence threshold |
+| `-v, --verbose` | off | Enable verbose output |
+| `--version` | | Show version and exit |
 
 -----
 
 ## Contributing
 
 Contributions are welcome\! Please feel free to submit a pull request or open an issue to discuss proposed changes or report bugs.
+
+### Development Setup
+
+```bash
+git clone git@github.com:benelog/pdf-refinery.git
+cd pdf-refinery
+pip install -e '.[dev]'
+pytest -v
+```
 
 ## License
 
