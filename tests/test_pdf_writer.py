@@ -25,6 +25,8 @@ class TestOverlayTextOnPage:
 
     def test_single_result_coordinates(self):
         doc, page = _make_page()
+        # Horizontal text: top-left (100,200), top-right (300,200),
+        # bottom-right (300,250), bottom-left (100,250)
         result = OcrResult(
             text="Hello",
             confidence=0.9,
@@ -38,8 +40,9 @@ class TestOverlayTextOnPage:
             spy.assert_called_once()
             call_kwargs = spy.call_args
             point = call_kwargs.kwargs.get("point") or call_kwargs[1].get("point", call_kwargs[0][0])
-            assert point.x == pytest.approx(100.0)  # scale_x = 1.0
-            assert point.y == pytest.approx(250.0)  # bottom_y * scale_y = 250 * 1.0
+            # baseline = tl + (bl - tl) * 0.85
+            assert point.x == pytest.approx(100.0)  # tl.x + 0 * 0.85
+            assert point.y == pytest.approx(200 + (250 - 200) * 0.85)  # 242.5
 
         doc.close()
 
@@ -58,9 +61,10 @@ class TestOverlayTextOnPage:
             assert count == 1
             call_kwargs = spy.call_args
             point = call_kwargs.kwargs.get("point") or call_kwargs[0][0]
-            # scale_x = 612/1224 = 0.5, scale_y = 792/1584 = 0.5
-            assert point.x == pytest.approx(100.0)  # 200 * 0.5
-            assert point.y == pytest.approx(250.0)  # 500 * 0.5
+            # scale = 0.5, tl=(100,200), bl=(100,250)
+            # baseline = tl + (bl - tl) * 0.85
+            assert point.x == pytest.approx(100.0)
+            assert point.y == pytest.approx(200 + (250 - 200) * 0.85)  # 242.5
 
         doc.close()
 
