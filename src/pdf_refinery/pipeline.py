@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from pdf_refinery.ocr_engine import OcrEngine
+from pdf_refinery.ocr_engine import OcrEngine, deduplicate_results
 from pdf_refinery.pdf_reader import open_pdf, page_to_image
 from pdf_refinery.pdf_writer import overlay_text_on_page, remove_text_layer
 
@@ -82,10 +82,12 @@ def run_ocr_pipeline(
             image = page_to_image(page, dpi=dpi)
             img_h, img_w = image.shape[:2]
 
-            # Run OCR with each language engine and merge results
+            # Run OCR with each language engine and deduplicate
             results = []
             for engine in engines:
                 results.extend(engine.recognize(image, confidence=confidence))
+            if len(engines) > 1:
+                results = deduplicate_results(results)
 
             if verbose:
                 click.echo(f"\n  Page {page_idx + 1}: {len(results)} text blocks detected")

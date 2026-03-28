@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0",
+    "opencv-python>=4.0",
     "paddleocr>=3.0",
     "PyMuPDF>=1.24",
 ]

@@ -1,5 +1,7 @@
 """Invisible text overlay for creating searchable PDFs."""
 
+import math
+
 import fitz
 
 from pdf_refinery.ocr_engine import OcrResult
@@ -30,6 +32,8 @@ def overlay_text_on_page(
 ) -> int:
     """Overlay invisible text on a PDF page based on OCR results.
 
+    Uses the full polygon from OCR to handle rotated/skewed text accurately.
+
     Args:
         page: The PyMuPDF page to modify.
         ocr_results: OCR detection results with bounding boxes in pixel coordinates.
@@ -46,25 +50,53 @@ def overlay_text_on_page(
     count = 0
     for result in ocr_results:
         bbox = result.bbox  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+        # top-left, top-right, bottom-right, bottom-left
 
-        # Calculate bounding box height in pixels for font size estimation
-        top_y = min(bbox[0][1], bbox[1][1])
-        bottom_y = max(bbox[2][1], bbox[3][1])
-        bbox_height_px = bottom_y - top_y
+        # Convert polygon corners to PDF coordinates
+        tl = fitz.Point(bbox[0][0] * scale_x, bbox[0][1] * scale_y)
+        tr = fitz.Point(bbox[1][0] * scale_x, bbox[1][1] * scale_y)
+        bl = fitz.Point(bbox[3][0] * scale_x, bbox[3][1] * scale_y)
 
-        # Convert to PDF coordinates
-        pdf_x = bbox[0][0] * scale_x
-        pdf_y = bottom_y * scale_y  # insert_text uses baseline (bottom-left)
-        font_size = bbox_height_px * scale_y * 0.85  # slight reduction for better fit
+        # Compute rotation angle from the top edge
+        dx = tr.x - tl.x
+        dy = tr.y - tl.y
+        angle = math.degrees(math.atan2(dy, dx))
+
+        # Height from left edge (top-left to bottom-left)
+        height = math.sqrt((bl.x - tl.x) ** 2 + (bl.y - tl.y) ** 2)
+        font_size = height * 0.85
 
         if font_size < 1:
             continue
 
+        # Baseline origin: offset down from top-left along the left edge
+        baseline = fitz.Point(
+            tl.x + (bl.x - tl.x) * 0.85,
+            tl.y + (bl.y - tl.y) * 0.85,
+        )
+
+        # Use morph for arbitrary rotation, snap to fixed angles for simple cases
+        abs_angle = abs(angle)
+        if abs_angle < 1:
+            rotate_val = 0
+            morph = None
+        elif abs(abs_angle - 90) < 1:
+            rotate_val = 90 if angle > 0 else 270
+            morph = None
+        elif abs(abs_angle - 180) < 1:
+            rotate_val = 180
+            morph = None
+        else:
+            rotate_val = 0
+            morph = (baseline, fitz.Matrix(1, 0, 0, 1, 0, 0).prerotate(angle))
+
         page.insert_text(
-            point=fitz.Point(pdf_x, pdf_y),
+            point=baseline,
             text=result.text,
             fontsize=font_size,
             render_mode=3,  # invisible text
+            rotate=rotate_val,
+            morph=morph,
         )
         count += 1
 
