@@ -25,9 +25,16 @@ def main():
               help='Page range to process (e.g., "1-10", "1,3,5").')
 @click.option("--confidence", default=0.5, type=float,
               help="Minimum confidence threshold for OCR results.")
+@click.option("--force-ocr", is_flag=True,
+              help="Re-OCR pages that already contain text, replacing it. "
+                   "Such pages are skipped by default.")
+@click.option("--font-file", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Font for the text layer. Use this when the built-in fonts "
+                   "cannot encode the document's characters.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
 def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
-        pages: str | None, confidence: float, verbose: bool):
+        pages: str | None, confidence: float, force_ocr: bool,
+        font_file: str | None, verbose: bool):
     """Apply OCR to a scanned PDF to make it searchable."""
     if output is None:
         output = input_file.with_stem(f"{input_file.stem}_ocr")
@@ -40,4 +47,6 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         pages=pages,
         confidence=confidence,
         verbose=verbose,
+        force_ocr=force_ocr,
+        font_file=font_file,
     )

@@ -1,8 +1,9 @@
 """Tests for pipeline module."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
+import fitz
 import numpy as np
 import pytest
 
@@ -79,3 +80,60 @@ class TestRunOcrPipeline:
         assert mock_engine_cls.call_count == 2
         mock_engine_cls.assert_any_call(lang="en")
         mock_engine_cls.assert_any_call(lang="korean")
+
+    def test_rejects_output_equal_to_input(self, tmp_pdf):
+        with pytest.raises(click.ClickException):
+            run_ocr_pipeline(input_path=tmp_pdf, output_path=tmp_pdf)
+
+    def test_leaves_input_file_untouched(self, tmp_pdf, tmp_path):
+        before = tmp_pdf.read_bytes()
+        with patch("pdf_refinery.pipeline.OcrEngine") as mock_engine_cls:
+            mock_engine_cls.return_value.recognize.return_value = []
+            run_ocr_pipeline(input_path=tmp_pdf, output_path=tmp_path / "out.pdf")
+        assert tmp_pdf.read_bytes() == before
+
+
+class TestExistingTextPolicy:
+    """Pages that already have text must not be silently destroyed."""
+
+    @pytest.fixture
+    def text_pdf(self, tmp_path):
+        path = tmp_path / "with_text.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        page.insert_text(fitz.Point(72, 100), "Original content", fontsize=24)
+        doc.save(path)
+        doc.close()
+        return path
+
+    @patch("pdf_refinery.pipeline.OcrEngine")
+    def test_skips_pages_with_text_by_default(self, mock_engine_cls, text_pdf, tmp_path):
+        mock_engine_cls.return_value.recognize.return_value = []
+
+        output = tmp_path / "out.pdf"
+        run_ocr_pipeline(input_path=text_pdf, output_path=output)
+
+        mock_engine_cls.return_value.recognize.assert_not_called()
+        doc = fitz.open(output)
+        assert "Original content" in doc[0].get_text()
+        doc.close()
+
+    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pipeline.OcrEngine")
+    def test_force_ocr_reprocesses_the_page(
+        self, mock_engine_cls, mock_page_to_image, text_pdf, tmp_path
+    ):
+        mock_engine_cls.return_value.recognize.return_value = [
+            OcrResult(text="Original content", confidence=0.9,
+                      bbox=[[100, 100], [400, 100], [400, 140], [100, 140]])
+        ]
+        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+
+        output = tmp_path / "out.pdf"
+        run_ocr_pipeline(input_path=text_pdf, output_path=output, force_ocr=True)
+
+        mock_engine_cls.return_value.recognize.assert_called_once()
+        doc = fitz.open(output)
+        # The text now comes from OCR, and the page still shows its content.
+        assert "Original content" in doc[0].get_text()
+        doc.close()

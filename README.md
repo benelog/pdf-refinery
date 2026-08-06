@@ -59,8 +59,30 @@ pdf-refinery ocr --pages "1-10" --verbose scanned_book.pdf
 | `--dpi` | `300` | DPI for page rendering |
 | `--pages` | all | Page range (e.g., `"1-10"`, `"1,3,5"`) |
 | `--confidence` | `0.5` | Minimum confidence threshold |
+| `--force-ocr` | off | Re-OCR pages that already contain text |
+| `--font-file` | built-in | Font for the text layer (single `.ttf`/`.otf`) |
 | `-v, --verbose` | off | Enable verbose output |
 | `--version` | | Show version and exit |
+
+### Pages that already contain text
+
+Pages with extractable text are **skipped by default**, so a document that is
+already searchable is left untouched. Pass `--force-ocr` to flatten such pages
+to an image and read them again.
+
+### Fonts and the text layer
+
+The text layer is invisible, so glyph shapes never matter — only whether the
+font can encode the characters. Built-in fonts cover Latin, Hangul, Kana and
+common Han, which is enough for most scanned books. For scripts they cannot
+encode (Thai, Arabic, Devanagari, or heavy Hanja use), supply a font yourself:
+
+```bash
+pdf-refinery ocr -l korean --font-file /path/to/NotoSansKR-Regular.ttf book.pdf
+```
+
+Any character that cannot be encoded is reported at the end of the run rather
+than silently dropped.
 
 -----
 

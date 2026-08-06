@@ -80,13 +80,15 @@ class OcrEngine:
         """Run OCR on a page image and return filtered results.
 
         Args:
-            image: Page image as a numpy array (RGB).
+            image: Page image as a numpy array in RGB order.
             confidence: Minimum confidence threshold.
 
         Returns:
             List of OcrResult with confidence above the threshold.
         """
-        raw = self._ocr.predict(image)
+        # PaddleOCR passes numpy input straight through as BGR (see PaddleX
+        # ReadImage), so RGB pages must be converted or the colours invert.
+        raw = self._ocr.predict(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         if not raw:
             return []
 
