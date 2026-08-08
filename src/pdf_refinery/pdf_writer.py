@@ -1,20 +1,42 @@
 """Invisible text overlay for creating searchable PDFs."""
 
 import math
+from typing import NamedTuple
 
 import fitz
 
-from pdf_refinery.fonts import FontResolver
+from pdf_refinery.fonts import FontResolver, span_metrics, text_length
 from pdf_refinery.ocr_engine import OcrResult
 
-# Approximate ratio of baseline position to total line height in typical fonts
-BASELINE_RATIO = 0.85
 ANGLE_SNAP_TOLERANCE = 1.0  # degrees
 
+# Bounds on how far a line may be squeezed or stretched to match its detected
+# box. Fitting the width is what keeps a line inside the page -- text drawn
+# past the crop box is not extracted at all, so an unfitted overlay silently
+# loses the tail of every line. The clamp only guards against a degenerate
+# box: a ratio outside this range means the detection, not the text, is wrong,
+# and distorting the line to match would misplace it rather than fix it.
+MIN_WIDTH_SCALE = 0.1
+MAX_WIDTH_SCALE = 10.0
 
-def has_text(page: fitz.Page) -> bool:
-    """Return whether the page already carries extractable text."""
-    return bool(page.get_text().strip())
+# Scanned pages routinely carry a stray text layer that is not the body text: a
+# page number stamped by a scanner, a running header, a watermark. Counting
+# those as "already searchable" would leave the whole page unsearchable, so a
+# page has to hold more than a caption's worth of text before it is skipped.
+MIN_TEXT_CHARS = 100
+
+
+def has_text(page: fitz.Page, min_chars: int = MIN_TEXT_CHARS) -> bool:
+    """Return whether the page already carries enough text to leave it alone.
+
+    Args:
+        page: The page to inspect.
+        min_chars: Characters, whitespace excluded, below which the page is
+            treated as having no text layer worth keeping. Zero means any text
+            at all counts.
+    """
+    text = "".join(page.get_text().split())
+    return len(text) >= min_chars if min_chars else bool(text)
 
 
 def remove_text_layer(page: fitz.Page) -> bool:
@@ -50,16 +72,53 @@ def rasterize_page(page: fitz.Page, dpi: int = 300) -> None:
     page.insert_image(page.rect, pixmap=pixmap, overlay=True)
 
 
+def _snap_angle(angle: float) -> float:
+    """Round a near-square angle to the exact quarter turn.
+
+    A page scanned straight still yields boxes off by hundredths of a degree.
+    Left alone those accumulate into visibly tilted text for no reason.
+    """
+    quarter = round(angle / 90.0) * 90.0
+    return quarter if abs(angle - quarter) < ANGLE_SNAP_TOLERANCE else angle
+
+
+class OverlayStats(NamedTuple):
+    """What an overlay did with the detections it was given.
+
+    Attributes:
+        inserted: Lines written into the text layer.
+        too_small: Lines whose box was under a point tall and were dropped.
+            Reported rather than discarded quietly, because a document that
+            loses many of them is unsearchable in a way no error mentions.
+    """
+
+    inserted: int
+    too_small: int
+
+
 def overlay_text_on_page(
     page: fitz.Page,
     ocr_results: list[OcrResult],
     image_width: int,
     image_height: int,
     font_resolver: FontResolver | None = None,
-) -> int:
+) -> OverlayStats:
     """Overlay invisible text on a PDF page based on OCR results.
 
-    Uses the full polygon from OCR to handle rotated/skewed text accurately.
+    Uses the full polygon from OCR to handle rotated/skewed text accurately,
+    and squeezes each line horizontally to the width of its detected box. That
+    fitting is not cosmetic: a font's natural advances have nothing to do with
+    the scanned line's width, and an overrun line runs off the crop box, where
+    ``get_text()`` cannot see it. On a Korean book scan, fitting the width took
+    the extracted-text error rate from 16.4% to a fraction of that -- the
+    recogniser had been right all along and the overlay was throwing the tail
+    of every line away.
+
+    Vertically it does the matching thing, sizing and placing each line so the
+    span box a viewer reports coincides with the box OCR detected. Both numbers
+    come from :func:`fonts.span_metrics` rather than a single ratio, because
+    one ratio cannot suit two scripts and, for the built-in CJK fonts, does not
+    even match what the font declares.
 
     Args:
         page: The PyMuPDF page to modify.
@@ -70,7 +129,7 @@ def overlay_text_on_page(
             extractable. Defaults to built-in fonts selected by script.
 
     Returns:
-        Number of text blocks inserted.
+        An :class:`OverlayStats` counting what was written and what was not.
     """
     if font_resolver is None:
         font_resolver = FontResolver()
@@ -79,6 +138,7 @@ def overlay_text_on_page(
     scale_y = page_rect.height / image_height
 
     count = 0
+    too_small = 0
     for result in ocr_results:
         bbox = result.bbox  # [top-left, top-right, bottom-right, bottom-left]
 
@@ -89,33 +149,45 @@ def overlay_text_on_page(
         dx = tr.x - tl.x
         dy = tr.y - tl.y
         angle = math.degrees(math.atan2(dy, dx))
+        box_width = math.hypot(dx, dy)
 
         height = math.sqrt((bl.x - tl.x) ** 2 + (bl.y - tl.y) ** 2)
-        font_size = height * BASELINE_RATIO
+
+        # Size and place the line so the span a viewer reports covers the
+        # detected box exactly. Both numbers come from the font's measured
+        # ascent and descent rather than a constant: a single ratio has to be
+        # wrong for one script or the other, and for the built-in CJK fonts it
+        # would be wrong against the declared metrics too. See
+        # fonts.span_metrics.
+        font = font_resolver.resolve(result.text)
+        ascent, descent = span_metrics(font)
+        font_size = height / (ascent + descent)
+        baseline_ratio = ascent / (ascent + descent)
 
         if font_size < 1:
+            # Too small to place meaningfully, and the text would be
+            # unsearchable wherever it landed. Counted so the run can say so
+            # rather than lose it in silence.
+            too_small += 1
             continue
 
         baseline = fitz.Point(
-            tl.x + (bl.x - tl.x) * BASELINE_RATIO,
-            tl.y + (bl.y - tl.y) * BASELINE_RATIO,
+            tl.x + (bl.x - tl.x) * baseline_ratio,
+            tl.y + (bl.y - tl.y) * baseline_ratio,
         )
 
-        abs_angle = abs(angle)
-        if abs_angle < ANGLE_SNAP_TOLERANCE:
-            rotate_val = 0
-            morph = None
-        elif abs(abs_angle - 90) < ANGLE_SNAP_TOLERANCE:
-            rotate_val = 90 if angle > 0 else 270
-            morph = None
-        elif abs(abs_angle - 180) < ANGLE_SNAP_TOLERANCE:
-            rotate_val = 180
-            morph = None
-        else:
-            rotate_val = 0
-            morph = (baseline, fitz.Matrix(1, 0, 0, 1, 0, 0).prerotate(angle))
+        natural_width = text_length(result.text, font, font_size)
+        width_scale = box_width / natural_width if natural_width > 0 else 1.0
+        width_scale = min(max(width_scale, MIN_WIDTH_SCALE), MAX_WIDTH_SCALE)
 
-        font = font_resolver.resolve(result.text)
+        # One transform for every orientation: the line is always drawn
+        # horizontally and then scaled along itself and turned into place. The
+        # ``rotate`` argument is deliberately not used -- it turns the line
+        # after the fact, so a horizontal scale would then act across the line
+        # instead of along it.
+        fit = (fitz.Matrix(width_scale, 0, 0, 1, 0, 0)
+               * fitz.Matrix(1, 0, 0, 1, 0, 0).prerotate(-_snap_angle(angle)))
+
         page.insert_text(
             point=baseline,
             text=result.text,
@@ -123,9 +195,8 @@ def overlay_text_on_page(
             fontname=font.name,
             fontfile=font.file,
             render_mode=3,  # invisible text
-            rotate=rotate_val,
-            morph=morph,
+            morph=(baseline, fit),
         )
         count += 1
 
-    return count
+    return OverlayStats(inserted=count, too_small=too_small)

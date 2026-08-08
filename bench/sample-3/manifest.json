@@ -1,0 +1,22 @@
+{
+  "name": "sample-3",
+  "description": "Two pages of a 1914 letterpress novel, scanned at 600 DPI grayscale by Google and mirrored on archive.org. Single justified column of Latin prose, serif, running header, page number, end-of-line hyphenation. Public domain (archive.org: possible-copyright-status NOT_IN_COPYRIGHT).",
+  "pdf": "../../tests/sample-3.pdf",
+  "script": "latin",
+  "force_ocr": false,
+  "source": "https://archive.org/details/girlwhodisappea00fedegoog (pages 31-32 of the scan, printed 22-23)",
+  "notes": [
+    "The only Latin corpus here, and the reason it exists: PaddleOCR picks a",
+    "lighter recognition model for 'en' than for Chinese or Japanese, and the",
+    "--rec-model option that overrides that could not be measured without a",
+    "Latin page to measure it on.",
+    "No text layer at all, unlike sample-1 and sample-2, so force_ocr is false",
+    "and there is no incumbent variant to compare against.",
+    "Letterpress trap: in 'to help me escape' on page 1 the 'm' is printed from",
+    "a damaged sort and reads close to 'ine' at full resolution. The ground",
+    "truth says 'me', which is what a human reads; a recogniser that answers",
+    "'ine' is charged two characters for it.",
+    "The scan is 600 DPI, roughly twice sample-1 and sample-2, so a --dpi sweep",
+    "here is not measuring the same thing as a sweep on those."
+  ]
+}

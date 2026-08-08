@@ -80,15 +80,35 @@ def multipage_scanned_pdf(tmp_path):
 class TestPreprocessImage:
     def test_output_shape_matches_input(self):
         img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-        result = preprocess_image(img)
+        result = preprocess_image(img, mode="binarize")
         assert result.shape == img.shape
         assert result.dtype == np.uint8
 
-    def test_produces_binary_output(self):
+    def test_binarize_produces_binary_output(self):
         img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-        result = preprocess_image(img)
+        result = preprocess_image(img, mode="binarize")
         unique = np.unique(result)
         assert set(unique).issubset({0, 255})
+
+    def test_the_default_thresholds_the_page(self):
+        """The default binarizes, against what the theory would predict.
+
+        PP-OCRv5 is trained on anti-aliased greyscale, so handing it a
+        threshold should lose information -- and the character error barely
+        moves either way. What moves is word boundaries: on the two Korean
+        corpora in bench/ the recogniser ran phrases together when given
+        greyscale, and word errors fell from 403 to 117 and 253 to 99 when it
+        was given black and white. Left untouched, the page still works;
+        searching it for a word often does not.
+        """
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        assert set(np.unique(preprocess_image(img))).issubset({0, 255})
+        assert np.array_equal(preprocess_image(img, mode="none"), img)
+
+    def test_an_unknown_mode_is_refused(self):
+        img = np.zeros((10, 10, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="binarize"):
+            preprocess_image(img, mode="adaptive")
 
 
 class TestDeduplicateResults:

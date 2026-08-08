@@ -25,10 +25,18 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0",
-    "opencv-python>=4.0",
     "paddleocr>=3.0",
     "PyMuPDF>=1.24",
 ]
+
+# OpenCV is deliberately absent above even though --preprocess binarize uses it.
+# paddlex, which paddleocr requires, pins opencv-contrib-python to an exact
+# version. That distribution and opencv-python both install the same `cv2`
+# module, so naming opencv-python here does not add a guarantee -- it installs a
+# second package over the first and leaves whichever landed last. Nothing on the
+# default path imports cv2; binarize imports it where it is used, so if a future
+# paddlex stops shipping one, that option fails with an ImportError naming the
+# fix instead of the whole tool failing to start.
 
 [project.urls]
 Homepage = "https://github.com/benelog/pdf-refinery"

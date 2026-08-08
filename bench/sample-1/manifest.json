@@ -1,0 +1,14 @@
+{
+  "name": "sample-1",
+  "description": "Grayscale book scan, 4 pages, Korean prose set justified with a running header and a page number. Latin digits and names, one Hanja gloss (噴射), corner brackets 「」 and 《》. ~310 DPI source images.",
+  "pdf": "../../tests/sample-1.pdf",
+  "script": "korean",
+  "force_ocr": true,
+  "notes": [
+    "The PDF already carries a text layer from whatever OCR produced it, so a",
+    "default run skips every page. force_ocr is required to measure anything.",
+    "That existing layer is scored as the 'incumbent' reference, not as truth.",
+    "Page 4 ends mid-word ('맞부') at the crop edge; the ground truth keeps it",
+    "as printed rather than completing the word from the next page."
+  ]
+}

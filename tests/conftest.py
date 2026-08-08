@@ -35,6 +35,17 @@ def tmp_pdf(tmp_path):
 
 
 @pytest.fixture
+def latin_font_file(tmp_path):
+    """A real, loadable font file that covers Latin but no CJK.
+
+    Taken from a PyMuPDF built-in so the tests do not depend on system fonts.
+    """
+    path = tmp_path / "latin.ttf"
+    path.write_bytes(fitz.Font("helv").buffer)
+    return str(path)
+
+
+@pytest.fixture
 def multi_page_pdf(tmp_path):
     """Create a 5-page PDF."""
     path = tmp_path / "multi.pdf"

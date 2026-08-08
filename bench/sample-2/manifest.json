@@ -1,0 +1,19 @@
+{
+  "name": "sample-2",
+  "description": "Grayscale scan of a two-page product leaflet, sans-serif Korean at mixed sizes with a hanging label column, a large solid-black photograph, Latin button names (A/B/C/D, ON/OFF, SIG, CR2016) and scanner skew. ~300 DPI source images.",
+  "pdf": "../../tests/sample-2.pdf",
+  "script": "korean",
+  "force_ocr": true,
+  "notes": [
+    "The PDF already carries a text layer from whatever OCR produced it, so a",
+    "default run skips every page. force_ocr is required to measure anything.",
+    "That existing layer is scored as the 'incumbent' reference, not as truth.",
+    "The incumbent layer on page 1 is close to worthless -- it renders most of",
+    "the page as unrelated Hanja -- which is the point of keeping this corpus.",
+    "The ground truth reproduces the leaflet's own typos ('누루면서', and a",
+    "'C버튼을 초정도' that is missing its 3). Correcting them would score a",
+    "faithful recogniser as wrong.",
+    "Page 1 is not a single text column. The ground truth reads the four button",
+    "labels around the photograph left-to-right, top row first."
+  ]
+}
