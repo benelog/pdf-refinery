@@ -26,9 +26,28 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "paddleocr>=3.0",
+    "paddlepaddle>=3.1,<3.3",
     "pikepdf>=9.0",
     "pypdfium2>=4.30",
 ]
+
+# paddlepaddle is named here even though paddleocr already needs it, because
+# paddleocr does not say so: paddlex declines to version-check it at all, since
+# the CPU and GPU builds are separate distributions. Nothing then holds a floor,
+# and both ends of the range below have been seen to break outright.
+#
+# On 3.0, a PP-OCRv6 model -- what current paddleocr reaches for by default --
+# fails to load at all: "Type of attribute: strides is not right". On 3.3, both
+# PP-OCRv5 and PP-OCRv6 die mid-inference with "ConvertPirAttribute2RuntimeAttri
+# bute not support", out of the oneDNN path paddlex enables by default on CPU.
+# Turning oneDNN off does work around the latter, but costs a factor of four to
+# seven on exactly the models this tool runs, so the version is held instead.
+# 3.1 and 3.2 were both checked to load and run the two models with oneDNN on.
+# Raise the ceiling once a release runs them again.
+#
+# This is the CPU build. The tool has no device option and has never been run
+# anywhere else; a GPU user wants paddlepaddle-gpu, which is a different name
+# and a different index, so it cannot be expressed as an extra here.
 
 # PyMuPDF used to do all of the above and is deliberately not here any more.
 # It is AGPL v3, which the MIT declared above cannot stand next to once this

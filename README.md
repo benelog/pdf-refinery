@@ -17,6 +17,11 @@ A command-line tool that transforms your scanned book PDFs into fully searchable
 ## Requirements
 
 - Python 3.10+
+- A CPU build of PaddlePaddle, installed for you and held to 3.1 or 3.2.
+  Neither neighbour works: 3.0 cannot load the detection model current
+  PaddleOCR chooses, and 3.3 faults during inference on every PP-OCR model. If
+  you already have PaddlePaddle, check its version before installing this — a
+  copy outside that range is the likeliest reason a run fails immediately.
 
 ## Installation
 
