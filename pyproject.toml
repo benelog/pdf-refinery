@@ -55,7 +55,6 @@ dependencies = [
 # over BSD-licensed PDFium. It stays in the dev extra as a second opinion:
 # a text layer only the engine that wrote it can read is not a searchable PDF,
 # so the tests check the output with an engine that had no hand in making it.
-# See library-alternative.md.
 
 # OpenCV is deliberately absent above even though --preprocess binarize uses it.
 # paddlex, which paddleocr requires, pins opencv-contrib-python to an exact

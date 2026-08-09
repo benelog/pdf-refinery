@@ -268,4 +268,4 @@ PDF reading and writing go through [pypdfium2](https://github.com/pypdfium2-team
 (MPL-2.0, over QPDF), both of which the MIT licence above can sit next to.
 PyMuPDF, which used to do this work, is AGPL v3 and is now a test-only
 dependency — the suite reads every output back with an engine that had no hand
-in writing it. See `library-alternative.md`.
+in writing it.

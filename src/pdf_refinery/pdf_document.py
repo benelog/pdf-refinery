@@ -4,7 +4,7 @@ Two libraries hold the same file because no one of them does both halves of
 the job. PDFium, through ``pypdfium2``, rasterises a page and reads the text
 already on it; QPDF, through ``pikepdf``, edits the object tree and writes the
 result. Both are permissively licensed, which is the reason this module exists
-at all -- see ``library-alternative.md``.
+at all: it replaced a single PyMuPDF handle that did both halves but is AGPL.
 
 The rendering handle is opened from the file as it stood on disk and never
 learns about an edit. That is not a limitation the pipeline has to work
