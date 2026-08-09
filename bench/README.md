@@ -51,7 +51,7 @@ Each run reports two separate numbers, because they fail independently:
   only its own writer can decode would score perfectly here otherwise.
 
 A font that cannot encode Hangul leaves `ocr` untouched and destroys `pdf`.
-That was a real defect (plan.md §1-1) and only the second number showed it.
+That was a real defect once, and only the second number showed it.
 The text layer is now written with a glyphless font that encodes the whole BMP,
 so that particular failure cannot recur — but the two numbers stay separate
 because everything else about the overlay, above all the width fitting, still

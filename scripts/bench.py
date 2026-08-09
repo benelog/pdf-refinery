@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure OCR accuracy against the ground truth in ``bench/``.
 
-Every tuning decision in plan.md was a hypothesis until this existed. The
+Every tuning decision in this tool was a hypothesis until this existed. The
 script exists to settle them one at a time: name a variant, run it, compare.
 
 Two accuracy numbers are always reported, because they fail independently:
@@ -12,8 +12,8 @@ Two accuracy numbers are always reported, because they fail independently:
     What ``page.get_text()`` extracts from the output PDF.
 
 A text layer written in a font that cannot encode Hangul leaves ``ocr`` perfect
-and ``pdf`` empty. That was a real defect (plan.md §1-1), and averaging the two
-into one score would have hidden it.
+and ``pdf`` empty. That was a real defect once, and averaging the two into one
+score would have hidden it.
 
 Each run happens in a child process. Peak memory then belongs to that run
 alone, and PaddleOCR's module-level state cannot leak from one recognition
