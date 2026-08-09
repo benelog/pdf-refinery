@@ -1,344 +1,403 @@
-"""Font selection for the invisible text layer.
+"""The font used for the invisible text layer.
 
-The overlay text is drawn with render mode 3 (invisible), so glyph shapes never
+The overlay is drawn with render mode 3 (invisible), so glyph shapes never
 matter -- only whether the PDF font can *encode* a code point, because that is
-what determines the text a reader extracts or searches.
+what determines the text a reader extracts or searches. That makes the usual
+font problem the wrong problem to solve. Instead of choosing a face that
+happens to cover the document's script, this builds the one font that covers
+every script at once: a *glyphless* font, the same trick Tesseract and ocrmypdf
+use for their text layers.
 
-PyMuPDF's Base14 ``helv`` is limited to Latin-1, and the built-in CJK fonts
-cover Hangul syllables well but only a fraction of Han ideographs. Neither
-``Font.has_glyph`` nor the font's cmap predicts what ``insert_text`` actually
-encodes, so encodability is probed empirically and cached.
+It is a two-glyph TrueType font -- ``.notdef`` and one outline that encloses no
+area -- reached through a ``CIDToGIDMap`` that sends every one of the 65536
+Identity-H codes to that single glyph. :func:`embed_font` wraps it as a
+Type0/CIDFontType2 and pairs it with an identity ToUnicode CMap, which is all a
+reader needs to give the text back. Extraction is verified against two
+independent engines (PDFium, which renders pages here, and MuPDF, which has no
+part in the shipped code at all).
+
+The whole thing costs about two kilobytes in the output -- 366 bytes of font
+program, 150 for the map, and 1.7 KB of ToUnicode CMap -- once per document
+however many pages draw with it. That is why there is no subsetting step and no
+``--font-file`` option any more: what those existed for was the coverage gap
+this font does not have.
+
+The one thing outside its reach is a code point above U+FFFF, which a two-byte
+Identity-H code cannot address; see :func:`unsupported_chars`.
 """
 
-from dataclasses import dataclass
-from pathlib import Path
+import struct
+import zlib
 
-import fitz
+import pikepdf
+from pikepdf import Array, Dictionary, Name, Stream, String
 
-# PyMuPDF built-in fonts, keyed by the script they cover best.
-BUILTIN_LATIN = "helv"
-BUILTIN_KOREAN = "korea"
-BUILTIN_JAPANESE = "japan"
-BUILTIN_CHINESE = "china-s"
+# Resource name the font is registered under inside the PDF.
+FONTNAME = "glyphless"
 
-# Code point ranges used to pick a font for a line of text.
-_HANGUL_RANGES = ((0x1100, 0x11FF), (0x3130, 0x318F), (0xA960, 0xA97F),
-                  (0xAC00, 0xD7A3), (0xD7B0, 0xD7FF))
-_KANA_RANGES = ((0x3040, 0x30FF), (0x31F0, 0x31FF), (0xFF66, 0xFF9D))
-_HAN_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))
+UNITS_PER_EM = 1000
+_ADVANCE = 500
+_ASCENT = 800
+_DESCENT = -200
+
+# Glyph 0 is ``.notdef`` and glyph 1 is what every code point resolves to.
+_NUM_GLYPHS = 2
+_GLYPH = 1
+
+# An Identity-H code is two bytes wide, so this is the last code point the
+# text layer can carry.
+_MAX_CODE_POINT = 0xFFFF
+
+# What a caller needs to place a line, in em.
+ADVANCE_EM = _ADVANCE / UNITS_PER_EM
+LINE_ASCENT = _ASCENT / UNITS_PER_EM
+LINE_DESCENT = -_DESCENT / UNITS_PER_EM
 
 
-def _in_ranges(code: int, ranges: tuple[tuple[int, int], ...]) -> bool:
-    return any(lo <= code <= hi for lo, hi in ranges)
+def text_length(text: str, fontsize: float) -> float:
+    """Width ``text`` occupies when drawn at ``fontsize``.
 
-
-def detect_script(text: str) -> str:
-    """Classify a line of text by the script that decides its font.
-
-    Returns one of ``"hangul"``, ``"kana"``, ``"han"`` or ``"latin"``. Mixed
-    lines resolve by priority: Hangul and Kana are unambiguous language
-    signals, while Han alone is shared between Chinese and Japanese.
+    Every glyph has the same advance, so this is arithmetic rather than a
+    metrics lookup. What it counts is what :func:`encode` will write, not what
+    was passed in, so a line carrying a character the font cannot encode is
+    still fitted to the width of the part that gets drawn. The number is
+    deliberately not the width the line had on the page --
+    :func:`pdf_writer.overlay_text_on_page` divides the detected box by it and
+    scales the line horizontally to fit, so what matters is only that it is
+    proportional to the character count.
     """
-    has_kana = has_hangul = has_han = False
-    for ch in text:
-        code = ord(ch)
-        if _in_ranges(code, _HANGUL_RANGES):
-            has_hangul = True
-        elif _in_ranges(code, _KANA_RANGES):
-            has_kana = True
-        elif _in_ranges(code, _HAN_RANGES):
-            has_han = True
-
-    if has_hangul:
-        return "hangul"
-    if has_kana:
-        return "kana"
-    if has_han:
-        return "han"
-    return "latin"
+    encodable = sum(1 for ch in text if ord(ch) <= _MAX_CODE_POINT)
+    return encodable * ADVANCE_EM * fontsize
 
 
-_SCRIPT_TO_BUILTIN = {
-    "hangul": BUILTIN_KOREAN,
-    "kana": BUILTIN_JAPANESE,
-    "han": BUILTIN_CHINESE,
-    "latin": BUILTIN_LATIN,
-}
+def unsupported_chars(text: str) -> set[str]:
+    """Return the characters of ``text`` the font cannot encode.
 
-
-@dataclass(frozen=True)
-class FontSpec:
-    """A font usable with :meth:`fitz.Page.insert_text`.
-
-    Attributes:
-        name: Resource name for the font inside the PDF.
-        file: Path to a font file, or None to use a PyMuPDF built-in font.
+    Only code points above U+FFFF qualify: an Identity-H code is two bytes
+    wide, and reaching the astral planes would mean a second encoding for
+    characters no recognition model in use here emits. They are reported
+    rather than dropped in silence, because a lost character is a word that
+    cannot be searched for and nothing else in the run would mention it.
     """
-
-    name: str
-    file: str | None = None
-
-    @property
-    def is_embedded(self) -> bool:
-        return self.file is not None
+    return {ch for ch in text if ord(ch) > _MAX_CODE_POINT}
 
 
-# Probing means writing characters into a scratch page and reading them back,
-# which is the only reliable way to know what insert_text encodes. A whole
-# batch goes onto one page because creating the page dominates the cost, and
-# results are cached since a document reuses the same small set of characters.
-_PROBE_FONTSIZE = 5
-_PROBE_LINE_HEIGHT = 8
-_PROBE_COLS = 100
-_PROBE_ROWS = 120
-_PROBE_MARGIN = 10
-_PROBE_PAGE = (
-    _PROBE_MARGIN * 2 + _PROBE_COLS * _PROBE_FONTSIZE * 2,
-    _PROBE_MARGIN * 2 + _PROBE_ROWS * _PROBE_LINE_HEIGHT,
-)
+def encode(text: str) -> bytes:
+    """Encode ``text`` as the Identity-H code string the layer is written with.
 
-_encodable_cache: dict[tuple[str, str | None, str], bool] = {}
-
-
-def _probe_batch(spec: FontSpec, chars: list[str]) -> set[str]:
-    """Return which of ``chars`` survive an insert/extract round trip.
-
-    Characters are laid out in a grid that stays inside the page, because text
-    drawn outside the crop box would not be extracted and would look like a
-    font failure.
+    Each code point becomes its own two-byte code, which the CMap turns back
+    into that same code point when a reader extracts it. Anything
+    :func:`unsupported_chars` reports is skipped -- there is no code for it --
+    which is why :func:`text_length` counts the same way.
     """
-    encodable: set[str] = set()
-    page_w, page_h = _PROBE_PAGE
-    per_page = _PROBE_COLS * _PROBE_ROWS
-
-    for start in range(0, len(chars), per_page):
-        batch = chars[start:start + per_page]
-        doc = fitz.open()
-        page = doc.new_page(width=page_w, height=page_h)
-        try:
-            for row in range(0, len(batch), _PROBE_COLS):
-                line = "".join(batch[row:row + _PROBE_COLS])
-                page.insert_text(
-                    fitz.Point(
-                        _PROBE_MARGIN,
-                        _PROBE_MARGIN + (row // _PROBE_COLS + 1) * _PROBE_LINE_HEIGHT,
-                    ),
-                    line,
-                    fontsize=_PROBE_FONTSIZE,
-                    fontname=spec.name,
-                    fontfile=spec.file,
-                )
-            extracted = page.get_text()
-            encodable |= {ch for ch in batch if ch in extracted}
-        except Exception:
-            pass  # nothing in this batch is usable
-        finally:
-            doc.close()
-
-    return encodable
+    return b"".join(
+        struct.pack(">H", ord(ch)) for ch in text if ord(ch) <= _MAX_CODE_POINT
+    )
 
 
-def unsupported_chars(text: str, spec: FontSpec) -> set[str]:
-    """Return the characters of ``text`` that ``spec`` cannot encode.
+# ---------------------------------------------------------------------------
+# TrueType assembly
+#
+# Written out with struct rather than pulled in from fontTools: the font is ten
+# fixed tables holding two glyphs, the layout never varies, and a build-time
+# dependency for a hundred lines of packing would be the larger thing to
+# maintain.
+# ---------------------------------------------------------------------------
 
-    Whitespace is ignored: it always round-trips, sometimes as a different
-    space character, which would otherwise register as a false drop.
+def _glyf() -> bytes:
+    """The one glyph, as an outline that draws nothing.
 
-    Note:
-        This function exists because the built-in fonts have real gaps --
-        measured by round trip, the CJK ones encode all Hangul syllables but
-        only 31% of Han and no Thai, Arabic or Devanagari, which is why
-        ``--font-file`` exists. The way out of the whole problem is the
-        glyphless font Tesseract uses: one empty glyph plus a ToUnicode CMap
-        covers every code point in about 4 KB, and nothing here would need to
-        choose a font or report a dropped character again. PyMuPDF's high-level
-        API cannot build one; it needs a Type0/Identity-H font assembled
-        directly, via fontTools or pikepdf. That is a new dependency for a
-        problem ``--font-file`` already answers, so it has not been done.
+    It would be simpler to leave it empty -- Tesseract's glyphless font does,
+    and nothing here is ever painted, since the layer is drawn invisible. It is
+    not empty because PDFium measures a character by its glyph's bounding box
+    and discards any character whose box comes out with no width. An empty
+    glyph is zero-height, which costs nothing while the text runs across the
+    page and everything the moment it runs down it: on a page turned by
+    ``/Rotate``, or scanned sideways, that zero height becomes the width and
+    PDFium extracts none of the line, while MuPDF reads it perfectly -- which
+    is the kind of defect that ships. A two-point contour encloses no area and
+    still has a bounding box, which is the whole reason this is not ``b""``.
     """
-    candidates = {ch for ch in text if not ch.isspace()}
-    unknown = [
-        ch for ch in candidates
-        if (spec.name, spec.file, ch) not in _encodable_cache
-    ]
-    if unknown:
-        encodable = _probe_batch(spec, unknown)
-        for ch in unknown:
-            _encodable_cache[(spec.name, spec.file, ch)] = ch in encodable
+    contour = (
+        struct.pack(">hhhhh", 1, 0, _DESCENT, _ADVANCE, _ASCENT)  # bbox
+        + struct.pack(">HH", 1, 0)      # one contour ending at point 1, no hinting
+        + bytes([0x01, 0x01])           # both points on-curve, coordinates as int16
+        + struct.pack(">hh", 0, _ADVANCE)          # x, as deltas from the origin
+        + struct.pack(">hh", _DESCENT, _ASCENT - _DESCENT)  # y
+    )
+    return contour + bytes(-len(contour) % 4)
 
-    return {
-        ch for ch in candidates
-        if not _encodable_cache[(spec.name, spec.file, ch)]
+
+def _loca() -> bytes:
+    """Glyph 0 runs from 0 to 0 -- ``.notdef`` is empty -- and glyph 1 follows."""
+    return struct.pack(">III", 0, 0, len(_glyf()))
+
+
+def _cmap() -> bytes:
+    """The smallest legal format-4 subtable, present only for well-formedness.
+
+    Nothing consults it: under Identity-H the code is the CID and the
+    ``CIDToGIDMap`` turns that into the glyph, so the font's own character
+    mapping never comes into it. A TrueType font without a cmap is still
+    invalid, hence the terminator segment the format requires and nothing else.
+    """
+    segments = 1
+    subtable = struct.pack(
+        ">HHHHHHH",
+        4,                  # format
+        16 + 8 * segments,  # length
+        0,                  # language
+        segments * 2,
+        2,                  # searchRange
+        0,                  # entrySelector
+        0,                  # rangeShift
+    )
+    subtable += struct.pack(">H", 0xFFFF)   # endCode
+    subtable += struct.pack(">H", 0)        # reservedPad
+    subtable += struct.pack(">H", 0xFFFF)   # startCode
+    subtable += struct.pack(">h", 1)        # idDelta: sends U+FFFF to .notdef
+    subtable += struct.pack(">H", 0)        # idRangeOffset
+    # One encoding record: platform 3 (Windows), encoding 1 (BMP).
+    return struct.pack(">HHHHI", 0, 1, 3, 1, 12) + subtable
+
+
+def _head() -> bytes:
+    return struct.pack(
+        ">IIIIHHqqhhhhHHhhh",
+        0x00010000,   # version
+        0x00010000,   # fontRevision
+        0,            # checkSumAdjustment, patched in by build_font
+        0x5F0F3CF5,   # magicNumber
+        0x0003,       # flags
+        UNITS_PER_EM,
+        0, 0,         # created, modified
+        0, _DESCENT, _ADVANCE, _ASCENT,   # bounding box
+        0,            # macStyle
+        8,            # lowestRecPPEM
+        2,            # fontDirectionHint
+        1,            # indexToLocFormat: 32-bit offsets
+        0,            # glyphDataFormat
+    )
+
+
+def _hhea() -> bytes:
+    return struct.pack(
+        ">IhhhHhhhhhhhhhhhh",
+        0x00010000, _ASCENT, _DESCENT, 0,
+        _ADVANCE, 0, 0, 0,   # advanceWidthMax and the side bearings
+        1, 0, 0,             # caret slope and offset
+        0, 0, 0, 0,          # reserved
+        0,                   # metricDataFormat
+        1,                   # numberOfHMetrics
+    )
+
+
+def _maxp() -> bytes:
+    return struct.pack(">IH" + "H" * 13, 0x00010000, _NUM_GLYPHS, *([0] * 13))
+
+
+def _hmtx() -> bytes:
+    """One metric record, then a left side bearing for the remaining glyph.
+
+    ``numberOfHMetrics`` is 1, which the format defines as "every glyph after
+    the first has the last stated advance".
+    """
+    return struct.pack(">Hh", _ADVANCE, 0) + bytes(2 * (_NUM_GLYPHS - 1))
+
+
+def _post() -> bytes:
+    # Version 3.0: no glyph names, which is the point.
+    return struct.pack(">IIhhIIIII", 0x00030000, 0, 0, 0, 1, 0, 0, 0, 0)
+
+
+def _os2() -> bytes:
+    return struct.pack(
+        ">HhHHH" + "h" * 8 + "hhh" + "10s" + "IIII" + "4s" + "HHH"
+        + "hhh" + "HH" + "II" + "hhHHH",
+        4,                    # version
+        _ADVANCE,             # xAvgCharWidth
+        400, 5, 0,            # weight, width, fsType (installable)
+        650, 700, 0, 140,     # subscript
+        650, 700, 0, 480,     # superscript
+        50, 250,              # strikeout
+        0,                    # sFamilyClass
+        bytes(10),            # panose
+        0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,  # ulUnicodeRange
+        b"NONE",
+        0x0040,               # fsSelection: regular
+        0x0000, 0xFFFF,       # usFirstCharIndex, usLastCharIndex
+        _ASCENT, _DESCENT, 0,     # sTypo{Ascender,Descender,LineGap}
+        _ASCENT, -_DESCENT,       # usWin{Ascent,Descent}, both unsigned
+        0xFFFFFFFF, 0xFFFFFFFF,  # ulCodePageRange
+        500, 700,             # sxHeight, sCapHeight
+        0x0020, 0x0020, 1,
+    )
+
+
+def _name() -> bytes:
+    records = b""
+    strings = b""
+    for name_id, text in ((1, "GlyphLess"), (2, "Regular"), (4, "GlyphLess"),
+                          (5, "Version 1.000"), (6, "GlyphLess")):
+        encoded = text.encode("utf-16-be")
+        records += struct.pack(">HHHHHH", 3, 1, 0x0409, name_id,
+                               len(encoded), len(strings))
+        strings += encoded
+    return struct.pack(">HHH", 0, 5, 6 + 12 * 5) + records + strings
+
+
+def _checksum(data: bytes) -> int:
+    data += bytes(-len(data) % 4)
+    return sum(struct.unpack(f">{len(data) // 4}I", data)) & 0xFFFFFFFF
+
+
+def build_font() -> bytes:
+    """Assemble the glyphless font.
+
+    Exposed for the tests; callers that need the bytes want :func:`font_file`,
+    which builds them once.
+    """
+    tables = {
+        b"OS/2": _os2(),
+        b"cmap": _cmap(),
+        b"glyf": _glyf(),
+        b"head": _head(),
+        b"hhea": _hhea(),
+        b"hmtx": _hmtx(),
+        b"loca": _loca(),
+        b"maxp": _maxp(),
+        b"name": _name(),
+        b"post": _post(),
     }
 
+    count = len(tables)
+    entry_selector = count.bit_length() - 1
+    search_range = 16 * (1 << entry_selector)
+    directory = b""
+    body = b""
+    offset = 12 + 16 * count
+    head_offset = 0
+    for tag in sorted(tables):
+        data = tables[tag]
+        if tag == b"head":
+            head_offset = offset
+        directory += struct.pack(">4sIII", tag, _checksum(data), offset, len(data))
+        padded = data + bytes(-len(data) % 4)
+        body += padded
+        offset += len(padded)
 
-_measure_cache: dict[str, fitz.Font] = {}
+    font = struct.pack(">IHHHH", 0x00010000, count, search_range, entry_selector,
+                       16 * count - search_range) + directory + body
+
+    # checkSumAdjustment is the eight bytes into head that make the whole file
+    # sum to the constant below. Nothing in this project's read path checks it;
+    # a stricter validator elsewhere would.
+    adjustment = (0xB1B0AFBA - _checksum(font)) & 0xFFFFFFFF
+    cursor = head_offset + 8
+    return font[:cursor] + struct.pack(">I", adjustment) + font[cursor + 4:]
 
 
-def text_length(text: str, spec: FontSpec, fontsize: float) -> float:
-    """Width ``text`` occupies when drawn with ``spec`` at ``fontsize``.
+_font_file: bytes | None = None
 
-    Two different calls are needed because the two font kinds are written into
-    the PDF differently, and each reports the other's metrics wrongly. A
-    built-in CJK name goes in as a CID font whose advances only
-    ``get_text_length`` knows; both were checked against the span box the
-    viewer actually produces.
+
+def font_file() -> bytes:
+    """The assembled font, built once per process and shared by every document."""
+    global _font_file
+    if _font_file is None:
+        _font_file = build_font()
+    return _font_file
+
+
+# ---------------------------------------------------------------------------
+# PDF font object
+# ---------------------------------------------------------------------------
+
+def _cid_to_gid() -> bytes:
+    """Every CID resolves to the one glyph.
+
+    Two bytes per CID for all 65536 of them: 128 KB of the same two bytes,
+    which deflates to about 150. This is what makes the font itself two glyphs
+    rather than 65535. The alternative, ``/Identity``, would need a distinct
+    glyph -- and so a ``loca`` entry -- per code point, and a ``loca`` of
+    ascending offsets is the one part of such a font that does not compress
+    away: 131 KB even deflated, against 150 bytes for this.
     """
-    if not text:
-        return 0.0
-    if spec.file is None:
-        return fitz.get_text_length(text, fontname=spec.name, fontsize=fontsize)
-    font = _measure_cache.get(spec.file)
-    if font is None:
-        font = _measure_cache[spec.file] = fitz.Font(fontfile=spec.file)
-    return font.text_length(text, fontsize)
+    return struct.pack(">H", _GLYPH) * (_MAX_CODE_POINT + 1)
 
 
-_metrics_cache: dict[tuple[str, str | None], tuple[float, float]] = {}
+def _to_unicode() -> bytes:
+    """The CMap that turns the codes back into the text they stand for.
 
-# Text for the metrics probe. Only the font's own ascent and descent decide the
-# span box, not which characters are in it, so this needs to be encodable
-# rather than representative -- ASCII is the one thing every candidate font
-# here can write.
-_METRICS_PROBE_TEXT = "Hxq"
-_METRICS_PROBE_SIZE = 100.0
-
-
-def span_metrics(spec: FontSpec) -> tuple[float, float]:
-    """Ascent and descent of a line drawn with ``spec``, in em, both positive.
-
-    These decide the box a viewer highlights and ``get_text()`` reports, so
-    they are what a line must be sized and placed by if the text layer is to
-    line up with the scan underneath it.
-
-    Measured by drawing and reading the span back, not taken from
-    ``fitz.Font``. For a font loaded from a file the two agree. For the
-    built-in CJK names they do not: ``fitz.Font("korea")`` declares
-    1.043/-0.266, while the CID font PyMuPDF actually writes into the PDF
-    behaves as 1.000/0.200. Trusting the declared numbers puts every Korean
-    line about 8% of its height out of position.
+    Without it a reader has a document full of Identity-H codes and no way to
+    know they are Unicode, so the text extracts as nothing -- which is the
+    whole product. The mapping is the identity, but it cannot be stated as one
+    range: ``bfrange`` increments the last byte of its destination only, so a
+    range wider than 256 codes is undefined. It takes 256 rows, in the batches
+    of 100 the specification allows, and deflates to under two kilobytes.
     """
-    key = (spec.name, spec.file)
-    cached = _metrics_cache.get(key)
-    if cached is not None:
-        return cached
-
-    doc = fitz.open()
-    page = doc.new_page(width=600, height=400)
-    baseline_y = 200.0
-    page.insert_text(
-        (50.0, baseline_y), _METRICS_PROBE_TEXT, fontsize=_METRICS_PROBE_SIZE,
-        fontname=spec.name, fontfile=spec.file, render_mode=3,
-    )
-    spans = [
-        span
-        for block in page.get_text("dict")["blocks"] if block["type"] == 0
-        for line in block["lines"] for span in line["spans"]
+    rows = [
+        b"<%04X> <%04X> <%04X>\n" % (hi << 8, (hi << 8) | 0xFF, hi << 8)
+        for hi in range(256)
     ]
-    if spans:
-        _, y0, _, y1 = spans[-1]["bbox"]
-        metrics = ((baseline_y - y0) / _METRICS_PROBE_SIZE,
-                   (y1 - baseline_y) / _METRICS_PROBE_SIZE)
-    else:
-        # A font that cannot write even ASCII is already reported elsewhere;
-        # fall back to the declared numbers rather than failing the overlay.
-        font = fitz.Font(spec.name) if spec.file is None else fitz.Font(fontfile=spec.file)
-        metrics = (font.ascender, -font.descender)
-    doc.close()
-
-    if metrics[0] + metrics[1] <= 0:
-        metrics = (0.8, 0.2)
-    _metrics_cache[key] = metrics
-    return metrics
+    batches = b""
+    for start in range(0, len(rows), 100):
+        batch = rows[start:start + 100]
+        batches += b"%d beginbfrange\n" % len(batch) + b"".join(batch) + b"endbfrange\n"
+    return (
+        b"/CIDInit /ProcSet findresource begin\n"
+        b"12 dict begin\nbegincmap\n"
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+        b"/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n"
+        b"1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+        + batches
+        + b"endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
+    )
 
 
-# Font collections hold several faces in one file. PyMuPDF's subset_fonts()
-# cannot rewrite them -- it reports "Index bounds" and leaves the font whole --
-# so a 18 MB NotoSansCJK-Regular.ttc lands in the output untouched.
-COLLECTION_SUFFIXES = (".ttc", ".otc")
-SINGLE_FACE_SUFFIXES = (".ttf", ".otf")
+def _deflated(pdf: pikepdf.Pdf, data: bytes) -> pikepdf.Object:
+    """A stream compressed on the way in rather than at save time."""
+    stream = Stream(pdf, b"")
+    stream.write(zlib.compress(data, 9), filter=Name.FlateDecode)
+    return stream
 
 
-def check_font_file(path: str) -> None:
-    """Raise ``ValueError`` if ``path`` is unusable for the text layer.
+def embed_font(pdf: pikepdf.Pdf) -> pikepdf.Object:
+    """Add the glyphless font to ``pdf`` and return the font object.
 
-    Catches the two failures that otherwise surface only after a full OCR run:
-    a font collection, which cannot be subset and bloats the output, and a file
-    PyMuPDF cannot parse at all.
+    Call this once per document: the return value is an indirect object, so
+    every page that references it shares the one embedded copy.
     """
-    suffix = Path(path).suffix.lower()
-    if suffix in COLLECTION_SUFFIXES:
-        raise ValueError(
-            f"'{Path(path).name}' is a font collection ({suffix}). PyMuPDF cannot "
-            "subset collections, so the entire font -- often 15-20 MB -- would be "
-            "embedded in the output. Use a single-face .ttf or .otf instead "
-            "(e.g. NotoSansKR-Regular.ttf), or split the collection with "
-            "'fonttools ttLib.ttCollection'."
-        )
-    if suffix not in SINGLE_FACE_SUFFIXES:
-        raise ValueError(
-            f"expected a {' or '.join(SINGLE_FACE_SUFFIXES)} file, got "
-            f"'{Path(path).name}'."
-        )
-    try:
-        fitz.Font(fontfile=path)
-    except Exception as exc:
-        raise ValueError(f"'{Path(path).name}' could not be read as a font: {exc}")
+    program = _deflated(pdf, font_file())
+    program.Length1 = len(font_file())
 
-
-class FontResolver:
-    """Chooses a font per line of OCR text.
-
-    A font file supplied by the user is preferred, but it does not win
-    unconditionally: a font that cannot encode a line would make that line
-    unsearchable, while a built-in font might encode it fine. So each line goes
-    to whichever candidate drops the fewest characters, and the number of lines
-    that fell back is recorded for the final report.
-    """
-
-    def __init__(self, font_file: str | None = None):
-        self._font_file = font_file
-        self._embedded = (
-            FontSpec(name="ocr-embedded", file=font_file) if font_file else None
-        )
-        self.dropped_chars: set[str] = set()
-        self.fallback_lines = 0
-        self._embedded_used = False
-
-    def _candidates(self, text: str) -> list[FontSpec]:
-        """Fonts to consider for ``text``, best guess first."""
-        builtin = FontSpec(name=_SCRIPT_TO_BUILTIN[detect_script(text)])
-        specs = [builtin] if self._embedded is None else [self._embedded, builtin]
-        if builtin.name != BUILTIN_LATIN:
-            # Hangul and Latin mix constantly; helv covers Latin-1 far better
-            # than the built-in CJK fonts do.
-            specs.append(FontSpec(name=BUILTIN_LATIN))
-        return specs
-
-    def resolve(self, text: str) -> FontSpec:
-        """Pick a font for ``text`` and record any characters it cannot encode."""
-        candidates = self._candidates(text)
-        best = candidates[0]
-        missing = unsupported_chars(text, best)
-        for alternative in candidates[1:]:
-            if not missing:
-                break
-            alt_missing = unsupported_chars(text, alternative)
-            if len(alt_missing) < len(missing):
-                best, missing = alternative, alt_missing
-
-        if self._embedded is not None and best is not self._embedded:
-            self.fallback_lines += 1
-        if best.is_embedded:
-            self._embedded_used = True
-        self.dropped_chars |= missing
-        return best
-
-    @property
-    def uses_embedded_font(self) -> bool:
-        """Whether an embedded font actually ended up in the document.
-
-        Subsetting is pointless -- and the flag misleading -- when every line
-        fell back to a built-in font.
-        """
-        return self._embedded_used
+    descriptor = pdf.make_indirect(Dictionary(
+        Type=Name.FontDescriptor,
+        FontName=Name("/GlyphLess"),
+        Flags=4,  # symbolic: no standard encoding describes what this covers
+        FontBBox=Array([0, _DESCENT, _ADVANCE, _ASCENT]),
+        ItalicAngle=0,
+        Ascent=_ASCENT,
+        Descent=_DESCENT,
+        CapHeight=_ASCENT,
+        StemV=80,
+        FontFile2=pdf.make_indirect(program),
+    ))
+    descendant = pdf.make_indirect(Dictionary(
+        Type=Name.Font,
+        Subtype=Name.CIDFontType2,
+        BaseFont=Name("/GlyphLess"),
+        CIDSystemInfo=Dictionary(
+            Registry=String("Adobe"), Ordering=String("Identity"), Supplement=0
+        ),
+        FontDescriptor=descriptor,
+        DW=_ADVANCE,
+        CIDToGIDMap=pdf.make_indirect(_deflated(pdf, _cid_to_gid())),
+    ))
+    return pdf.make_indirect(Dictionary(
+        Type=Name.Font,
+        Subtype=Name.Type0,
+        BaseFont=Name("/GlyphLess"),
+        Encoding=Name("/Identity-H"),
+        DescendantFonts=Array([descendant]),
+        ToUnicode=pdf.make_indirect(Stream(pdf, _to_unicode())),
+    ))

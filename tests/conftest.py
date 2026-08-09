@@ -1,9 +1,9 @@
 """Shared test fixtures."""
 
-import fitz
 import pytest
 
 from pdf_refinery.ocr_engine import OcrResult
+from tests.helpers import source_pdf
 
 
 @pytest.fixture
@@ -25,33 +25,15 @@ def sample_ocr_results():
 
 @pytest.fixture
 def tmp_pdf(tmp_path):
-    """Create a minimal 1-page PDF."""
+    """A minimal 1-page PDF on disk."""
     path = tmp_path / "test.pdf"
-    doc = fitz.open()
-    doc.new_page(width=612, height=792)
-    doc.save(path)
-    doc.close()
+    path.write_bytes(source_pdf())
     return path
 
 
 @pytest.fixture
-def latin_font_file(tmp_path):
-    """A real, loadable font file that covers Latin but no CJK.
-
-    Taken from a PyMuPDF built-in so the tests do not depend on system fonts.
-    """
-    path = tmp_path / "latin.ttf"
-    path.write_bytes(fitz.Font("helv").buffer)
-    return str(path)
-
-
-@pytest.fixture
 def multi_page_pdf(tmp_path):
-    """Create a 5-page PDF."""
+    """A 5-page PDF on disk."""
     path = tmp_path / "multi.pdf"
-    doc = fitz.open()
-    for _ in range(5):
-        doc.new_page(width=612, height=792)
-    doc.save(path)
-    doc.close()
+    path.write_bytes(source_pdf(pages=5))
     return path

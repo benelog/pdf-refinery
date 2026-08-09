@@ -68,7 +68,6 @@ pdf-refinery ocr -l korean --resume scanned_book.pdf
 | `--textline-orientation` | off | Let the recogniser turn individual lines |
 | `--unwarp` | off | Flatten page curvature before detection |
 | `--force-ocr` | off | Re-OCR pages that already contain text |
-| `--font-file` | built-in | Font for the text layer (single `.ttf`/`.otf`) |
 | `--skip-text-threshold` | `100` | Characters a page needs before it counts as already searchable |
 | `--sidecar` | none | Also write the recognised text to a plain-text file |
 | `--checkpoint-every` | `20` | Save the output every N pages (`0` = only at the end) |
@@ -141,23 +140,22 @@ file is a transcript of the whole document rather than a log of OCR calls.
 ### Fonts and the text layer
 
 The text layer is invisible, so glyph shapes never matter — only whether the
-font can encode the characters. Built-in fonts cover Latin, Hangul, Kana and
-common Han, which is enough for most scanned books. For scripts they cannot
-encode (Thai, Arabic, Devanagari, or heavy Hanja use), supply a font yourself:
+font can encode the characters. There is therefore nothing to choose and no
+option to set: every document is written with a **glyphless font**, the same
+approach Tesseract and ocrmypdf use. It is a generated TrueType font holding
+one glyph that draws nothing, which every code point in the Basic Multilingual
+Plane maps to, so Hangul, Kana, Han, Thai, Devanagari, Cyrillic and Greek all
+encode alike — there is no script it covers only partly.
 
-```bash
-pdf-refinery ocr -l korean --font-file /path/to/NotoSansKR-Regular.ttf book.pdf
-```
+Nothing is drawn from it, so it costs almost nothing: the font program is 664
+bytes, and with its character map and the table that gives the text back the
+whole text layer adds about 2 KB to a document, whatever its page count. There
+is no subsetting step and no font file to supply.
 
-The file must be a **single-face** `.ttf` or `.otf`. Font collections (`.ttc`,
-`.otc` — including the widely installed `NotoSansCJK-Regular.ttc`) are rejected:
-PyMuPDF cannot subset them, so the whole 15–20 MB font would end up embedded in
-your output.
-
-A supplied font is preferred but not forced. Lines it cannot encode fall back to
-a built-in font rather than losing their text, and the count is reported at the
-end. Any character no available font can encode is reported too, rather than
-silently dropped.
+The one thing outside its reach is a code point above U+FFFF, which the
+two-byte encoding cannot address. Those are counted and reported at the end of
+a run rather than dropped in silence; no recognition model shipped with
+PaddleOCR produces them.
 
 ### Tuning
 
@@ -259,3 +257,10 @@ pytest -v
 ## License
 
 This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+
+PDF reading and writing go through [pypdfium2](https://github.com/pypdfium2-team/pypdfium2)
+(Apache-2.0, over BSD-licensed PDFium) and [pikepdf](https://github.com/pikepdf/pikepdf)
+(MPL-2.0, over QPDF), both of which the MIT licence above can sit next to.
+PyMuPDF, which used to do this work, is AGPL v3 and is now a test-only
+dependency — the suite reads every output back with an engine that had no hand
+in writing it. See `library-alternative.md`.

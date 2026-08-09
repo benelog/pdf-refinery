@@ -268,6 +268,9 @@ def read_pages(sidecar: Path) -> list[str]:
 
 
 def extract_pdf_pages(pdf_path: Path, page_numbers: list[int]) -> list[str]:
+    # MuPDF, which the pipeline does not use: the output is written with
+    # PDFium and QPDF, so reading it back with an engine that had no hand in
+    # making it is what makes this number a check rather than a tautology.
     import fitz
 
     with fitz.open(pdf_path) as doc:

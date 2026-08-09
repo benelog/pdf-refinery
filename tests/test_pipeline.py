@@ -16,6 +16,7 @@ from pdf_refinery.pipeline import (
     progress_path_for,
     run_ocr_pipeline,
 )
+from tests.helpers import source_pdf, source_pdf_with_text
 
 RECOGNISED = [
     OcrResult(
@@ -34,7 +35,7 @@ def fake_ocr():
     actually ends up in the output PDF.
     """
     with patch("pdf_refinery.pipeline.OcrEngine") as engine_cls, \
-         patch("pdf_refinery.pipeline.page_to_image") as to_image, \
+         patch("pdf_refinery.pdf_document.Page.to_image") as to_image, \
          patch("pdf_refinery.pipeline.preprocess_image",
                side_effect=lambda img, mode=None: img):
         to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
@@ -63,15 +64,15 @@ class TestParsePageRange:
 
 class TestRunOcrPipeline:
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
-    def test_basic_execution(self, mock_engine_cls, mock_page_to_image, mock_overlay, tmp_pdf, tmp_path):
+    def test_basic_execution(self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = [
             OcrResult(text="Hello", confidence=0.9, bbox=[[0, 0], [50, 0], [50, 20], [0, 20]])
         ]
         mock_engine_cls.return_value = mock_engine
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
         mock_overlay.return_value = OverlayStats(1, 0)
 
         output = tmp_path / "out.pdf"
@@ -81,13 +82,13 @@ class TestRunOcrPipeline:
         mock_overlay.assert_called_once()
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
-    def test_page_range(self, mock_engine_cls, mock_page_to_image, mock_overlay, multi_page_pdf, tmp_path):
+    def test_page_range(self, mock_engine_cls, mock_to_image, mock_overlay, multi_page_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = []
         mock_engine_cls.return_value = mock_engine
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
         mock_overlay.return_value = OverlayStats(0, 0)
 
         output = tmp_path / "out.pdf"
@@ -96,13 +97,13 @@ class TestRunOcrPipeline:
         assert mock_overlay.call_count == 2
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
-    def test_multiple_languages(self, mock_engine_cls, mock_page_to_image, mock_overlay, tmp_pdf, tmp_path):
+    def test_multiple_languages(self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = []
         mock_engine_cls.return_value = mock_engine
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
         mock_overlay.return_value = OverlayStats(0, 0)
 
         output = tmp_path / "out.pdf"
@@ -115,10 +116,10 @@ class TestRunOcrPipeline:
             lang="korean", rec_model=None, unwarp=False, textline_orientation=False)
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
     def test_textline_orientation_reaches_the_engine(
-        self, mock_engine_cls, mock_page_to_image, mock_overlay, tmp_pdf, tmp_path
+        self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path
     ):
         # Asked for explicitly it must arrive; it is off by default because it
         # corrupts upright pages without reporting anything (see
@@ -127,7 +128,7 @@ class TestRunOcrPipeline:
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = []
         mock_engine_cls.return_value = mock_engine
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
         mock_overlay.return_value = OverlayStats(0, 0)
 
         run_ocr_pipeline(
@@ -166,14 +167,7 @@ class TestExistingTextPolicy:
     @pytest.fixture
     def text_pdf(self, tmp_path):
         path = tmp_path / "with_text.pdf"
-        doc = fitz.open()
-        page = doc.new_page(width=612, height=792)
-        for i in range(10):
-            page.insert_text(
-                fitz.Point(72, 100 + i * 30), "Original content", fontsize=24
-            )
-        doc.save(path)
-        doc.close()
+        path.write_bytes(source_pdf_with_text(["Original content"] * 10, fontsize=24))
         return path
 
     @patch("pdf_refinery.pipeline.OcrEngine")
@@ -188,16 +182,16 @@ class TestExistingTextPolicy:
         assert "Original content" in doc[0].get_text()
         doc.close()
 
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
     def test_force_ocr_reprocesses_the_page(
-        self, mock_engine_cls, mock_page_to_image, text_pdf, tmp_path
+        self, mock_engine_cls, mock_to_image, text_pdf, tmp_path
     ):
         mock_engine_cls.return_value.recognize.return_value = [
             OcrResult(text="Original content", confidence=0.9,
                       bbox=[[100, 100], [400, 100], [400, 140], [100, 140]])
         ]
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
 
         output = tmp_path / "out.pdf"
         run_ocr_pipeline(input_path=text_pdf, output_path=output, force_ocr=True)
@@ -208,23 +202,18 @@ class TestExistingTextPolicy:
         assert "Original content" in doc[0].get_text()
         doc.close()
 
-    @patch("pdf_refinery.pipeline.page_to_image")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
     @patch("pdf_refinery.pipeline.OcrEngine")
     def test_a_stray_header_does_not_suppress_the_page(
-        self, mock_engine_cls, mock_page_to_image, tmp_path
+        self, mock_engine_cls, mock_to_image, tmp_path
     ):
         # A scanned page whose only text layer is a page number must still be
         # read; skipping it would leave the body unsearchable.
         path = tmp_path / "stray.pdf"
-        doc = fitz.open()
-        doc.new_page(width=612, height=792).insert_text(
-            fitz.Point(300, 760), "117", fontsize=10
-        )
-        doc.save(path)
-        doc.close()
+        path.write_bytes(source_pdf_with_text(["117"], fontsize=10))
 
         mock_engine_cls.return_value.recognize.return_value = []
-        mock_page_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
+        mock_to_image.return_value = np.zeros((792, 612, 3), dtype=np.uint8)
 
         run_ocr_pipeline(input_path=path, output_path=tmp_path / "out.pdf")
 
@@ -235,12 +224,7 @@ class TestExistingTextPolicy:
         self, mock_engine_cls, tmp_path
     ):
         path = tmp_path / "stray.pdf"
-        doc = fitz.open()
-        doc.new_page(width=612, height=792).insert_text(
-            fitz.Point(300, 760), "117", fontsize=10
-        )
-        doc.save(path)
-        doc.close()
+        path.write_bytes(source_pdf_with_text(["117"], fontsize=10))
 
         mock_engine_cls.return_value.recognize.return_value = []
 
@@ -289,12 +273,7 @@ class TestSidecar:
     def test_skipped_pages_are_transcribed_too(self, mock_engine_cls, tmp_path):
         # The sidecar is a transcript of the document, not a log of OCR calls.
         path = tmp_path / "with_text.pdf"
-        doc = fitz.open()
-        page = doc.new_page(width=612, height=792)
-        for i in range(10):
-            page.insert_text(fitz.Point(72, 100 + i * 30), "Original content", fontsize=24)
-        doc.save(path)
-        doc.close()
+        path.write_bytes(source_pdf_with_text(["Original content"] * 10, fontsize=24))
 
         mock_engine_cls.return_value.recognize.return_value = []
         sidecar = tmp_path / "out.txt"
@@ -412,10 +391,7 @@ class TestCheckpointAndResume:
             )
 
         other = tmp_path / "other.pdf"
-        doc = fitz.open()
-        doc.new_page(width=612, height=792)
-        doc.save(other)
-        doc.close()
+        other.write_bytes(source_pdf())
 
         fake_ocr.recognize.side_effect = None
         with pytest.raises(click.ClickException, match="belongs to a run over"):
@@ -435,28 +411,30 @@ class TestCheckpointAndResume:
         assert not progress_path_for(output).exists()
         assert not output.exists()
 
-    def test_resume_still_subsets_the_embedded_font(
-        self, fake_ocr, multi_page_pdf, tmp_path, latin_font_file
+    def test_resume_finishes_a_document_that_already_has_a_text_layer(
+        self, fake_ocr, multi_page_pdf, tmp_path
     ):
-        # Subsetting rewrites the object table of a document that a previous
-        # run already wrote fonts into -- the same shape of operation that
-        # breaks a still-open document if done at a checkpoint.
+        # A resumed run reopens an output the earlier run already wrote a font
+        # and a text layer into, and keeps writing into it. It does not go
+        # looking for that font -- the pages it adds embed their own copy -- so
+        # the size check below is what keeps that from mattering: a duplicate
+        # is a couple of kilobytes and does not grow with the page count.
         output = tmp_path / "out.pdf"
         fake_ocr.recognize.side_effect = [
             RECOGNISED, RECOGNISED, RuntimeError("killed mid-run")
         ]
         with pytest.raises(RuntimeError):
             run_ocr_pipeline(
-                input_path=multi_page_pdf, output_path=output,
-                checkpoint_every=2, font_file=latin_font_file,
+                input_path=multi_page_pdf, output_path=output, checkpoint_every=2,
             )
 
         fake_ocr.recognize.side_effect = None
         run_ocr_pipeline(
             input_path=multi_page_pdf, output_path=output,
-            checkpoint_every=2, font_file=latin_font_file, resume=True,
+            checkpoint_every=2, resume=True,
         )
 
         doc = fitz.open(output)
         assert all("Recognised line" in page.get_text() for page in doc)
         doc.close()
+        assert output.stat().st_size < 16_000

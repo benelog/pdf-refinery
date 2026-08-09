@@ -83,19 +83,6 @@ def _validate_pages(ctx, param, value: str | None) -> str | None:
     return value
 
 
-def _validate_font_file(ctx, param, value: str | None) -> str | None:
-    """Reject fonts that only fail once the whole document has been processed."""
-    from pdf_refinery.fonts import check_font_file
-
-    if value is None:
-        return None
-    try:
-        check_font_file(value)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc))
-    return value
-
-
 @click.group()
 @click.version_option(package_name="pdf-refinery")
 def main():
@@ -119,11 +106,6 @@ def main():
 @click.option("--force-ocr", is_flag=True,
               help="Re-OCR pages that already contain text, replacing it. "
                    "Such pages are skipped by default.")
-@click.option("--font-file", type=click.Path(exists=True, dir_okay=False),
-              default=None, callback=_validate_font_file,
-              help="Font for the text layer. Use this when the built-in fonts "
-                   "cannot encode the document's characters. Single-face "
-                   ".ttf/.otf only.")
 @click.option("--skip-text-threshold", default=MIN_TEXT_CHARS, type=click.IntRange(0),
               help="Characters a page needs before it counts as already "
                    "searchable and is skipped. Keeps a stray page number or "
@@ -171,7 +153,7 @@ def main():
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
 def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         pages: str | None, confidence: float, force_ocr: bool, overwrite: bool,
-        font_file: str | None, skip_text_threshold: int, sidecar: Path | None,
+        skip_text_threshold: int, sidecar: Path | None,
         checkpoint_every: int, resume: bool, preprocess: str,
         rec_model: str | None, unwarp: bool, textline_orientation: bool,
         auto_rotate: bool, verbose: bool):
@@ -244,7 +226,6 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         confidence=confidence,
         verbose=verbose,
         force_ocr=force_ocr,
-        font_file=font_file,
         sidecar=sidecar,
         skip_text_threshold=skip_text_threshold,
         checkpoint_every=checkpoint_every,

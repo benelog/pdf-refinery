@@ -13,7 +13,6 @@ from pathlib import Path
 
 import click
 
-from pdf_refinery.fonts import FontResolver
 from pdf_refinery.ocr_engine import (
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
@@ -24,12 +23,11 @@ from pdf_refinery.ocr_engine import (
     unrotate_results,
     upright,
 )
-from pdf_refinery.pdf_reader import open_pdf, page_to_image
+from pdf_refinery.pdf_document import open_pdf
 from pdf_refinery.pdf_writer import (
     MIN_TEXT_CHARS,
     has_text,
     overlay_text_on_page,
-    rasterize_page,
 )
 
 # Pages between intermediate saves. Each save rewrites the whole PDF, so this
@@ -108,23 +106,16 @@ def _load_progress(progress_path: Path, input_path: Path, output_path: Path) -> 
     return done
 
 
-def _save(doc, output_path: Path, final: bool = False, subset_fonts: bool = False) -> None:
+def _save(doc, output_path: Path, final: bool = False) -> None:
     """Write the document without ever leaving a half-written output behind.
 
     On a resumed run the document was opened *from* ``output_path``, so an
     interrupt during a direct save would destroy the only copy of the work so
     far. Writing a sibling file and renaming keeps the previous checkpoint
     readable until the new one is complete.
-
-    Garbage collection and font subsetting are reserved for the final save.
-    Both rewrite the object table, and PyMuPDF keeps caches keyed by xref, so
-    doing either to a document that is still being written to makes the next
-    ``insert_text`` fail on a font it can no longer find.
     """
-    if final and subset_fonts:
-        doc.subset_fonts()
     partial = output_path.with_name(output_path.name + PARTIAL_SUFFIX)
-    doc.save(partial, garbage=4 if final else 0, deflate=True)
+    doc.save(partial, final=final)
     os.replace(partial, output_path)
 
 
@@ -177,7 +168,6 @@ def run_ocr_pipeline(
     confidence: float = 0.5,
     verbose: bool = False,
     force_ocr: bool = False,
-    font_file: str | None = None,
     sidecar: Path | None = None,
     skip_text_threshold: int = MIN_TEXT_CHARS,
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY,
@@ -202,7 +192,6 @@ def run_ocr_pipeline(
         confidence: Minimum OCR confidence threshold.
         verbose: Enable verbose output.
         force_ocr: Re-OCR pages that already contain text, replacing it.
-        font_file: Font used for the text layer, overriding the built-in fonts.
         sidecar: Optional path for a plain-text transcript of every page.
         skip_text_threshold: Characters a page needs before it counts as
             already searchable. See :data:`pdf_writer.MIN_TEXT_CHARS`.
@@ -266,10 +255,10 @@ def run_ocr_pipeline(
         )
         for lang in langs
     ]
-    font_resolver = FontResolver(font_file=font_file)
     transcript = _Sidecar(sidecar, append=bool(done)) if sidecar else None
     total_blocks = 0
     total_too_small = 0
+    dropped_chars: set[str] = set()
     skipped = 0
     since_checkpoint = 0
 
@@ -289,19 +278,23 @@ def run_ocr_pipeline(
         for page_idx in tracked:
             page = doc[page_idx]
 
-            if has_text(page, min_chars=skip_text_threshold):
-                if not force_ocr:
-                    skipped += 1
-                    done.add(page_idx)
-                    if transcript:
-                        transcript.add_page([page.get_text().strip()])
-                    if verbose:
-                        click.echo(f"  Page {page_idx + 1}: already has text, skipped")
-                    continue
-                rasterize_page(page, dpi=dpi)
+            already_readable = has_text(page, min_chars=skip_text_threshold)
+            if already_readable and not force_ocr:
+                skipped += 1
+                done.add(page_idx)
+                if transcript:
+                    transcript.add_page([page.text().strip()])
+                if verbose:
+                    click.echo(f"  Page {page_idx + 1}: already has text, skipped")
+                continue
 
-            image = page_to_image(page, dpi=dpi)
+            # Rendered before anything is written to the page, which is what
+            # lets the same rendering both feed the recogniser and, on a page
+            # being re-read, replace the page it came from.
+            image = page.to_image(dpi=dpi)
             img_h, img_w = image.shape[:2]
+            if already_readable:
+                page.replace_with_image(image)
 
             # Orientation is judged on the rendered page, before preprocessing,
             # and the turn is done here rather than inside PaddleOCR. Both
@@ -325,11 +318,10 @@ def run_ocr_pipeline(
             if verbose:
                 click.echo(f"  Page {page_idx + 1}: {len(results)} text blocks detected")
 
-            stats = overlay_text_on_page(
-                page, results, img_w, img_h, font_resolver=font_resolver,
-            )
+            stats = overlay_text_on_page(page, results, img_w, img_h)
             total_blocks += stats.inserted
             total_too_small += stats.too_small
+            dropped_chars |= stats.dropped_chars
             if transcript:
                 transcript.add_page([r.text for r in results])
 
@@ -340,12 +332,7 @@ def run_ocr_pipeline(
                 if verbose:
                     click.echo(f"  Checkpoint saved ({len(done)} page(s) complete)")
 
-    # Subsetting only pays off once, at the end. A resumed run may add no
-    # embedded lines of its own while the document already carries the font an
-    # earlier run embedded, so the font file -- not this run's usage -- decides.
-    _save(doc, output_path, final=True, subset_fonts=bool(font_file) and (
-        font_resolver.uses_embedded_font or resume
-    ))
+    _save(doc, output_path, final=True)
     doc.close()
     if transcript:
         transcript.flush()
@@ -361,17 +348,11 @@ def run_ocr_pipeline(
             f"Note: {total_too_small} detected line(s) were too small to place "
             f"and are not searchable. A higher --dpi usually recovers them."
         )
-    if font_resolver.fallback_lines:
+    if dropped_chars:
+        sample = "".join(sorted(dropped_chars)[:20])
         click.echo(
-            f"Note: {font_resolver.fallback_lines} line(s) fell back to a built-in "
-            f"font because '{font_file}' could not encode them."
-        )
-    if font_resolver.dropped_chars:
-        sample = "".join(sorted(font_resolver.dropped_chars)[:20])
-        click.echo(
-            f"Warning: {len(font_resolver.dropped_chars)} character(s) could not be "
-            f"encoded and are not searchable: {sample}\n"
-            f"Supply a font covering them with --font-file."
+            f"Warning: {len(dropped_chars)} character(s) lie above U+FFFF, which "
+            f"the text layer cannot encode, and are not searchable: {sample}"
         )
     if sidecar:
         click.echo(f"Text transcript written to '{sidecar}'.")

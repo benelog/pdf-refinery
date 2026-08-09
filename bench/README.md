@@ -46,10 +46,16 @@ scripts/bench.py table                    # compare everything measured so far
 Each run reports two separate numbers, because they fail independently:
 
 - **ocr** — the strings the recogniser returned (from `--sidecar`).
-- **pdf** — the strings `page.get_text()` gets back out of the output PDF.
+- **pdf** — the strings MuPDF gets back out of the output PDF. Deliberately a
+  different engine from the PDFium the pipeline itself writes with: a layer
+  only its own writer can decode would score perfectly here otherwise.
 
 A font that cannot encode Hangul leaves `ocr` untouched and destroys `pdf`.
 That was a real defect (plan.md §1-1) and only the second number showed it.
+The text layer is now written with a glyphless font that encodes the whole BMP,
+so that particular failure cannot recur — but the two numbers stay separate
+because everything else about the overlay, above all the width fitting, still
+fails in exactly that shape.
 
 ## The three corpora here
 

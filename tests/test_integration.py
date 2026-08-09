@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from pdf_refinery.ocr_engine import OcrEngine, preprocess_image, deduplicate_results, OcrResult
-from pdf_refinery.pdf_reader import page_to_image
-from pdf_refinery.pdf_writer import overlay_text_on_page, remove_text_layer
+from pdf_refinery.pdf_document import open_pdf
+from pdf_refinery.pdf_writer import overlay_text_on_page
 from pdf_refinery.pipeline import run_ocr_pipeline
 
 
@@ -138,9 +138,8 @@ class TestOcrEngineIntegration:
     """Tests that exercise real PaddleOCR inference."""
 
     def test_recognizes_text_from_rendered_page(self, scanned_pdf):
-        doc = fitz.open(scanned_pdf)
-        page = doc[0]
-        image = page_to_image(page, dpi=300)
+        doc = open_pdf(scanned_pdf)
+        image = doc[0].to_image(dpi=300)
         doc.close()
 
         preprocessed = preprocess_image(image)
@@ -151,9 +150,8 @@ class TestOcrEngineIntegration:
         assert "hello" in recognized_text or "world" in recognized_text
 
     def test_returns_valid_bboxes(self, scanned_pdf):
-        doc = fitz.open(scanned_pdf)
-        page = doc[0]
-        image = page_to_image(page, dpi=300)
+        doc = open_pdf(scanned_pdf)
+        image = doc[0].to_image(dpi=300)
         doc.close()
 
         preprocessed = preprocess_image(image)
@@ -169,14 +167,14 @@ class TestOcrEngineIntegration:
 
 
 class TestOverlayIntegration:
-    def test_overlay_makes_text_searchable(self, scanned_pdf):
-        doc = fitz.open(scanned_pdf)
+    def test_overlay_makes_text_searchable(self, scanned_pdf, tmp_path):
+        doc = open_pdf(scanned_pdf)
         page = doc[0]
 
         # Confirm no text layer initially
-        assert page.get_text().strip() == ""
+        assert page.text().strip() == ""
 
-        image = page_to_image(page, dpi=300)
+        image = page.to_image(dpi=300)
         img_h, img_w = image.shape[:2]
         preprocessed = preprocess_image(image)
 
@@ -184,28 +182,42 @@ class TestOverlayIntegration:
         results = engine.recognize(preprocessed, confidence=0.5)
         overlay_text_on_page(page, results, img_w, img_h)
 
+        output = tmp_path / "overlaid.pdf"
+        doc.save(output, final=True)
+        doc.close()
+
         # Now the page should have searchable text
-        text = page.get_text().strip().lower()
-        assert len(text) > 0
-        doc.close()
+        reader = fitz.open(output)
+        assert len(reader[0].get_text().strip()) > 0
+        reader.close()
 
 
-class TestRemoveTextLayerIntegration:
-    def test_removes_text_preserves_image(self, scanned_pdf):
-        doc = fitz.open(scanned_pdf)
+class TestFlatteningAPageIntegration:
+    def test_replacing_a_page_with_its_rendering_drops_the_text_only(
+        self, scanned_pdf, tmp_path
+    ):
+        # A real scan carries an image and, once something has stamped text on
+        # it, a text layer too. Re-reading such a page means losing the text
+        # and keeping the picture.
+        stamped = tmp_path / "stamped.pdf"
+        marked = fitz.open(scanned_pdf)
+        marked[0].insert_text(fitz.Point(100, 400), "Temporary text", fontsize=14)
+        marked.save(stamped)
+        marked.close()
+
+        doc = open_pdf(stamped)
         page = doc[0]
+        assert "Temporary text" in page.text()
 
-        # Add text, then remove it
-        page.insert_text(fitz.Point(100, 400), "Temporary text", fontsize=14)
-        assert "Temporary text" in page.get_text()
-
-        remove_text_layer(page)
-        assert page.get_text().strip() == ""
-
-        # Image should still be present
-        images = page.get_images()
-        assert len(images) > 0
+        page.replace_with_image(page.to_image(dpi=150))
+        output = tmp_path / "flat.pdf"
+        doc.save(output, final=True)
         doc.close()
+
+        reader = fitz.open(output)
+        assert reader[0].get_text().strip() == ""
+        assert len(reader[0].get_images()) > 0
+        reader.close()
 
 
 class TestFullPipeline:

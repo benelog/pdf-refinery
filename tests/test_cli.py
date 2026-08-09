@@ -136,19 +136,6 @@ class TestOptionValidation:
         self._fails(CliRunner(), mock_pipeline,
                     ["ocr", str(tmp_pdf), "-l", "en", "--dpi", "5000"], "--dpi")
 
-    def test_font_collection_is_rejected(self, mock_pipeline, tmp_pdf, tmp_path):
-        collection = tmp_path / "NotoSansCJK-Regular.ttc"
-        collection.write_bytes(b"")
-        self._fails(CliRunner(), mock_pipeline,
-                    ["ocr", str(tmp_pdf), "-l", "en", "--font-file", str(collection)],
-                    "font collection")
-
-    def test_valid_font_file_passes(self, mock_pipeline, tmp_pdf, latin_font_file):
-        result = CliRunner().invoke(
-            main, ["ocr", str(tmp_pdf), "-l", "en", "--font-file", latin_font_file]
-        )
-        assert result.exit_code == 0
-
 
 @patch("pdf_refinery.pipeline.run_ocr_pipeline")
 class TestOutputOverwrite:
