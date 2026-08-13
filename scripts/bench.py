@@ -54,6 +54,10 @@ from pdf_refinery.ocr_engine import SERVER_REC_LANGS, SERVER_REC_MODEL  # noqa: 
 # Variants
 # --------------------------------------------------------------------------
 
+def _default_lang(corpus: "Corpus") -> str:
+    return {"korean": "korean", "latin": "en"}.get(corpus.meta.get("script"), "en")
+
+
 def _wrong_language(corpus: "Corpus") -> dict:
     """Name a language the corpus is definitely not written in.
 
@@ -347,10 +351,6 @@ def run_variant(name: str, corpus: Corpus, overrides: dict, workdir: Path) -> di
             for n, o, p in zip(pages, ocr_scores, pdf_scores)
         ],
     }
-
-
-def _default_lang(corpus: Corpus) -> str:
-    return {"korean": "korean", "latin": "en"}.get(corpus.meta.get("script"), "en")
 
 
 def score_incumbent(corpus: Corpus) -> dict | None:

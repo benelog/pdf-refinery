@@ -7,7 +7,7 @@ from pikepdf import Name
 from pdf_refinery.fonts import LINE_ASCENT, LINE_DESCENT, text_length
 from pdf_refinery.ocr_engine import OcrResult
 from pdf_refinery.pdf_document import Matrix
-from pdf_refinery.pdf_writer import has_text, overlay_text_on_page
+from pdf_refinery.text_overlay import has_text, overlay_text_on_page
 from tests.helpers import (
     ink,
     opened,

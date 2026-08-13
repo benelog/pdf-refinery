@@ -16,7 +16,7 @@ import click
 from pdf_refinery.ocr_engine import (
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
-    OcrEngine,
+    create_engine,
     deduplicate_results,
     detect_page_orientation,
     preprocess_image,
@@ -24,7 +24,7 @@ from pdf_refinery.ocr_engine import (
     upright,
 )
 from pdf_refinery.pdf_document import open_pdf
-from pdf_refinery.pdf_writer import (
+from pdf_refinery.text_overlay import (
     MIN_TEXT_CHARS,
     has_text,
     overlay_text_on_page,
@@ -42,24 +42,44 @@ PROGRESS_VERSION = 1
 PAGE_SEPARATOR = "\f"
 
 
+def parse_page_selections(pages_str: str) -> list[tuple[int, int]]:
+    """Parse a page range string into 1-based ``(start, end)`` pairs.
+
+    Supports formats like "1-10", "1,3,5", "1-3,7,10-12"; a single number is
+    the pair ``(n, n)``. Input that cannot mean anything -- ``"abc"``, ``"0"``,
+    ``"10-1"`` -- raises ValueError with a reason fit to show the user. This is
+    the one place that knows the syntax, so the CLI's early check and the
+    parse the pipeline runs on cannot drift apart.
+    """
+    if not pages_str.strip():
+        raise ValueError("Page range is empty.")
+    selections = []
+    for part in pages_str.split(","):
+        part = part.strip()
+        if not part:
+            raise ValueError("Page range has an empty entry.")
+        bounds = part.split("-", 1) if "-" in part else [part]
+        try:
+            numbers = [int(b.strip()) for b in bounds]
+        except ValueError:
+            raise ValueError(f"'{part}' is not a page number.") from None
+        if any(n < 1 for n in numbers):
+            raise ValueError(f"'{part}' is out of range: page numbers start at 1.")
+        if len(numbers) == 2 and numbers[0] > numbers[1]:
+            raise ValueError(f"'{part}' runs backwards.")
+        selections.append((numbers[0], numbers[-1]))
+    return selections
+
+
 def parse_page_range(pages_str: str, total_pages: int) -> list[int]:
     """Parse a page range string into a list of 0-based page indices.
 
-    Supports formats like "1-10", "1,3,5", "1-3,7,10-12".
-    Input is 1-based, output is 0-based.
+    Input is 1-based, output is 0-based; pages beyond ``total_pages`` are
+    dropped. Raises ValueError as :func:`parse_page_selections` does.
     """
     indices = set()
-    for part in pages_str.split(","):
-        part = part.strip()
-        if "-" in part:
-            start, end = part.split("-", 1)
-            start = max(1, int(start))
-            end = min(total_pages, int(end))
-            indices.update(range(start - 1, end))
-        else:
-            idx = int(part) - 1
-            if 0 <= idx < total_pages:
-                indices.add(idx)
+    for start, end in parse_page_selections(pages_str):
+        indices.update(range(start - 1, min(end, total_pages)))
     return sorted(indices)
 
 
@@ -119,7 +139,7 @@ def _save(doc, output_path: Path, final: bool = False) -> None:
     os.replace(partial, output_path)
 
 
-class _Sidecar:
+class _Transcript:
     """Plain-text transcript of the pages, written in step with checkpoints.
 
     Text is buffered until a checkpoint rather than written per page, so the
@@ -194,7 +214,7 @@ def run_ocr_pipeline(
         force_ocr: Re-OCR pages that already contain text, replacing it.
         sidecar: Optional path for a plain-text transcript of every page.
         skip_text_threshold: Characters a page needs before it counts as
-            already searchable. See :data:`pdf_writer.MIN_TEXT_CHARS`.
+            already searchable. See :data:`text_overlay.MIN_TEXT_CHARS`.
         checkpoint_every: Pages between intermediate saves; 0 disables them,
             which also makes the run unresumable.
         resume: Continue an interrupted run from its last checkpoint.
@@ -203,7 +223,7 @@ def run_ocr_pipeline(
         rec_model: Recognition model overriding the language's default.
         unwarp: Correct page curvature before detection.
         textline_orientation: Turn lines the classifier judges upside down
-            before recognising them. See :class:`ocr_engine.OcrEngine`.
+            before recognising them. See :class:`ocr_engine.PaddleEngine`.
         auto_rotate: Detect a page scanned sideways or upside down, read it
             the right way up, and place the text back on the page as it is.
     """
@@ -223,7 +243,11 @@ def run_ocr_pipeline(
     total_pages = len(doc)
 
     if pages:
-        page_indices = parse_page_range(pages, total_pages)
+        try:
+            page_indices = parse_page_range(pages, total_pages)
+        except ValueError as exc:
+            doc.close()
+            raise click.ClickException(str(exc))
         if not page_indices:
             # Without this the run "succeeds" with zero pages and writes an
             # output that looks like a finished job.
@@ -247,7 +271,7 @@ def run_ocr_pipeline(
     click.echo(f"Languages: {', '.join(langs)}")
 
     engines = [
-        OcrEngine(
+        create_engine(
             lang=lang,
             rec_model=rec_model,
             unwarp=unwarp,
@@ -255,7 +279,7 @@ def run_ocr_pipeline(
         )
         for lang in langs
     ]
-    transcript = _Sidecar(sidecar, append=bool(done)) if sidecar else None
+    transcript = _Transcript(sidecar, append=bool(done)) if sidecar else None
     total_blocks = 0
     total_too_small = 0
     dropped_chars: set[str] = set()
@@ -292,7 +316,7 @@ def run_ocr_pipeline(
             # lets the same rendering both feed the recogniser and, on a page
             # being re-read, replace the page it came from.
             image = page.to_image(dpi=dpi)
-            img_h, img_w = image.shape[:2]
+            image_height, image_width = image.shape[:2]
             if already_readable:
                 page.replace_with_image(image)
 
@@ -318,7 +342,7 @@ def run_ocr_pipeline(
             if verbose:
                 click.echo(f"  Page {page_idx + 1}: {len(results)} text blocks detected")
 
-            stats = overlay_text_on_page(page, results, img_w, img_h)
+            stats = overlay_text_on_page(page, results, image_width, image_height)
             total_blocks += stats.inserted
             total_too_small += stats.too_small
             dropped_chars |= stats.dropped_chars

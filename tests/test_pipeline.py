@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from pdf_refinery.ocr_engine import OcrResult
-from pdf_refinery.pdf_writer import OverlayStats
+from pdf_refinery.text_overlay import OverlayStats
 from pdf_refinery.pipeline import (
     PAGE_SEPARATOR,
     parse_page_range,
@@ -34,7 +34,7 @@ def fake_ocr():
     The text overlay itself stays real: the resume tests care about what
     actually ends up in the output PDF.
     """
-    with patch("pdf_refinery.pipeline.OcrEngine") as engine_cls, \
+    with patch("pdf_refinery.pipeline.create_engine") as engine_cls, \
          patch("pdf_refinery.pdf_document.Page.to_image") as to_image, \
          patch("pdf_refinery.pipeline.preprocess_image",
                side_effect=lambda img, mode=None: img):
@@ -65,7 +65,7 @@ class TestParsePageRange:
 class TestRunOcrPipeline:
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_basic_execution(self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = [
@@ -83,7 +83,7 @@ class TestRunOcrPipeline:
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_page_range(self, mock_engine_cls, mock_to_image, mock_overlay, multi_page_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = []
@@ -98,7 +98,7 @@ class TestRunOcrPipeline:
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_multiple_languages(self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path):
         mock_engine = MagicMock()
         mock_engine.recognize.return_value = []
@@ -117,7 +117,7 @@ class TestRunOcrPipeline:
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_textline_orientation_reaches_the_engine(
         self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path
     ):
@@ -155,7 +155,7 @@ class TestRunOcrPipeline:
 
     def test_leaves_input_file_untouched(self, tmp_pdf, tmp_path):
         before = tmp_pdf.read_bytes()
-        with patch("pdf_refinery.pipeline.OcrEngine") as mock_engine_cls:
+        with patch("pdf_refinery.pipeline.create_engine") as mock_engine_cls:
             mock_engine_cls.return_value.recognize.return_value = []
             run_ocr_pipeline(input_path=tmp_pdf, output_path=tmp_path / "out.pdf")
         assert tmp_pdf.read_bytes() == before
@@ -170,7 +170,7 @@ class TestExistingTextPolicy:
         path.write_bytes(source_pdf_with_text(["Original content"] * 10, fontsize=24))
         return path
 
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_skips_pages_with_text_by_default(self, mock_engine_cls, text_pdf, tmp_path):
         mock_engine_cls.return_value.recognize.return_value = []
 
@@ -183,7 +183,7 @@ class TestExistingTextPolicy:
         doc.close()
 
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_force_ocr_reprocesses_the_page(
         self, mock_engine_cls, mock_to_image, text_pdf, tmp_path
     ):
@@ -203,7 +203,7 @@ class TestExistingTextPolicy:
         doc.close()
 
     @patch("pdf_refinery.pdf_document.Page.to_image")
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_a_stray_header_does_not_suppress_the_page(
         self, mock_engine_cls, mock_to_image, tmp_path
     ):
@@ -219,7 +219,7 @@ class TestExistingTextPolicy:
 
         mock_engine_cls.return_value.recognize.assert_called_once()
 
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_threshold_of_zero_restores_skip_on_any_text(
         self, mock_engine_cls, tmp_path
     ):
@@ -269,7 +269,7 @@ class TestSidecar:
         assert len(pages) == 6  # five pages, then a trailing empty tail
         assert pages[0].strip() == "Recognised line"
 
-    @patch("pdf_refinery.pipeline.OcrEngine")
+    @patch("pdf_refinery.pipeline.create_engine")
     def test_skipped_pages_are_transcribed_too(self, mock_engine_cls, tmp_path):
         # The sidecar is a transcript of the document, not a log of OCR calls.
         path = tmp_path / "with_text.pdf"

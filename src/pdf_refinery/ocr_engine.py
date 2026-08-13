@@ -69,6 +69,17 @@ def is_supported_lang(lang: str) -> bool:
     return rec_model is not None
 
 
+def to_paddle_bgr(image: np.ndarray) -> np.ndarray:
+    """Reorder an RGB page into the array PaddleOCR models expect.
+
+    PaddleOCR passes numpy input straight through as BGR (see PaddleX
+    ReadImage), so RGB pages must be converted or the colours invert.
+    Reversing the channel axis is what cv2.COLOR_RGB2BGR does, checked
+    against it; the copy is needed because Paddle wants contiguous input.
+    """
+    return np.ascontiguousarray(image[:, :, ::-1])
+
+
 PREPROCESS_MODES = ("none", "binarize")
 DEFAULT_PREPROCESS = "binarize"
 
@@ -180,9 +191,7 @@ def detect_page_orientation(image: np.ndarray) -> int:
 
         _orientation_classifier = DocImgOrientationClassification()
 
-    result = _orientation_classifier.predict(
-        np.ascontiguousarray(image[:, :, ::-1])
-    )[0]
+    result = _orientation_classifier.predict(to_paddle_bgr(image))[0]
     try:
         angle = int(result["label_names"][0])
     except (KeyError, IndexError, ValueError):
@@ -419,11 +428,7 @@ class PaddleEngine:
         Returns:
             List of OcrResult with confidence above the threshold.
         """
-        # PaddleOCR passes numpy input straight through as BGR (see PaddleX
-        # ReadImage), so RGB pages must be converted or the colours invert.
-        # Reversing the channel axis is what cv2.COLOR_RGB2BGR does, checked
-        # against it; the copy is needed because Paddle wants contiguous input.
-        raw = self._ocr.predict(np.ascontiguousarray(image[:, :, ::-1]))
+        raw = self._ocr.predict(to_paddle_bgr(image))
         if not raw:
             return []
 
@@ -439,10 +444,6 @@ class PaddleEngine:
                 results.append(OcrResult(text=text, confidence=conf, bbox=bbox))
         return sort_reading_order(results)
 
-
-# Retained because ``OcrEngine`` was this class's name before the protocol
-# above existed and it is what the pipeline and tests refer to.
-OcrEngine = PaddleEngine
 
 # The engines available to build. One entry today; the point of the mapping is
 # that adding a second is a line here plus a class, not a change to the

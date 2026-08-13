@@ -26,8 +26,8 @@ from pdf_refinery.ocr_engine import (
     SERVER_REC_LANGS,
     SERVER_REC_MODEL,
 )
-from pdf_refinery.pdf_writer import MIN_TEXT_CHARS
-from pdf_refinery.pipeline import DEFAULT_CHECKPOINT_EVERY
+from pdf_refinery.pipeline import DEFAULT_CHECKPOINT_EVERY, parse_page_selections
+from pdf_refinery.text_overlay import MIN_TEXT_CHARS
 
 
 def _validate_langs(ctx, param, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -54,32 +54,17 @@ def _validate_pages(ctx, param, value: str | None) -> str | None:
 
     Ranges are still clamped to the document later; what is rejected here is
     input that cannot mean anything, such as ``"abc"``, ``"0"`` or ``"10-1"``.
+    The syntax itself lives in :func:`pipeline.parse_page_selections`.
     """
     if value is None:
         return None
-
-    def bad(reason: str) -> click.BadParameter:
-        return click.BadParameter(
-            f"{reason} Expected 1-based page numbers like \"1-10\", \"1,3,5\" "
+    try:
+        parse_page_selections(value)
+    except ValueError as exc:
+        raise click.BadParameter(
+            f"{exc} Expected 1-based page numbers like \"1-10\", \"1,3,5\" "
             "or \"1-3,7\"."
         )
-
-    if not value.strip():
-        raise bad("Page range is empty.")
-
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            raise bad("Page range has an empty entry.")
-        bounds = part.split("-", 1) if "-" in part else [part]
-        try:
-            numbers = [int(b.strip()) for b in bounds]
-        except ValueError:
-            raise bad(f"'{part}' is not a page number.")
-        if any(n < 1 for n in numbers):
-            raise bad(f"'{part}' is out of range: page numbers start at 1.")
-        if len(numbers) == 2 and numbers[0] > numbers[1]:
-            raise bad(f"'{part}' runs backwards.")
     return value
 
 

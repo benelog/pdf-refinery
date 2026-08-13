@@ -4,9 +4,9 @@ import fitz
 import numpy as np
 import pytest
 
-from pdf_refinery.ocr_engine import OcrEngine, preprocess_image, deduplicate_results, OcrResult
+from pdf_refinery.ocr_engine import PaddleEngine, preprocess_image, deduplicate_results, OcrResult
 from pdf_refinery.pdf_document import open_pdf
-from pdf_refinery.pdf_writer import overlay_text_on_page
+from pdf_refinery.text_overlay import overlay_text_on_page
 from pdf_refinery.pipeline import run_ocr_pipeline
 
 
@@ -134,7 +134,7 @@ class TestDeduplicateResults:
         assert len(result) == 1
 
 
-class TestOcrEngineIntegration:
+class TestPaddleEngineIntegration:
     """Tests that exercise real PaddleOCR inference."""
 
     def test_recognizes_text_from_rendered_page(self, scanned_pdf):
@@ -143,7 +143,7 @@ class TestOcrEngineIntegration:
         doc.close()
 
         preprocessed = preprocess_image(image)
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(preprocessed, confidence=0.5)
 
         recognized_text = " ".join(r.text for r in results).lower()
@@ -155,7 +155,7 @@ class TestOcrEngineIntegration:
         doc.close()
 
         preprocessed = preprocess_image(image)
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(preprocessed, confidence=0.5)
 
         assert len(results) > 0
@@ -178,7 +178,7 @@ class TestOverlayIntegration:
         img_h, img_w = image.shape[:2]
         preprocessed = preprocess_image(image)
 
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(preprocessed, confidence=0.5)
         overlay_text_on_page(page, results, img_w, img_h)
 

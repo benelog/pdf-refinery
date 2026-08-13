@@ -10,7 +10,6 @@ import pytest
 from pdf_refinery.ocr_engine import (
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
-    OcrEngine,
     OcrResult,
     PaddleEngine,
     create_engine,
@@ -28,7 +27,7 @@ class TestOcrResult:
         assert len(r.bbox) == 4
 
 
-class TestOcrEngine:
+class TestPaddleEngine:
     @patch("paddleocr.PaddleOCR")
     def test_confidence_filtering(self, mock_paddle_cls):
         mock_ocr = MagicMock()
@@ -44,7 +43,7 @@ class TestOcrEngine:
             ],
         }]
 
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(np.zeros((100, 100, 3), dtype=np.uint8), confidence=0.5)
 
         assert len(results) == 2
@@ -57,7 +56,7 @@ class TestOcrEngine:
         mock_paddle_cls.return_value = mock_ocr
         mock_ocr.predict.return_value = []
 
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(np.zeros((100, 100, 3), dtype=np.uint8))
 
         assert results == []
@@ -74,7 +73,7 @@ class TestOcrEngine:
             "dt_polys": [poly],
         }]
 
-        engine = OcrEngine(lang="en")
+        engine = PaddleEngine(lang="en")
         results = engine.recognize(np.zeros((100, 100, 3), dtype=np.uint8))
 
         assert len(results) == 1
@@ -221,7 +220,7 @@ class TestOpenCvIsOptional:
         rgb = np.zeros((4, 4, 3), dtype=np.uint8)
         rgb[..., 0] = 10  # R
         rgb[..., 2] = 30  # B
-        OcrEngine(lang="en").recognize(rgb)
+        PaddleEngine(lang="en").recognize(rgb)
 
         passed = mock_ocr.predict.call_args.args[0]
         assert passed[0, 0, 0] == 30 and passed[0, 0, 2] == 10
@@ -244,12 +243,12 @@ class TestTextlineOrientation:
 
     @patch("paddleocr.PaddleOCR")
     def test_default_engine_does_not_enable_it(self, mock_paddle_cls):
-        OcrEngine(lang="korean")
+        PaddleEngine(lang="korean")
         _, kwargs = mock_paddle_cls.call_args
         assert kwargs["use_textline_orientation"] is False
 
     @patch("paddleocr.PaddleOCR")
     def test_it_can_still_be_asked_for(self, mock_paddle_cls):
-        OcrEngine(lang="korean", textline_orientation=True)
+        PaddleEngine(lang="korean", textline_orientation=True)
         _, kwargs = mock_paddle_cls.call_args
         assert kwargs["use_textline_orientation"] is True

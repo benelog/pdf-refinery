@@ -62,7 +62,7 @@ def text_length(text: str, fontsize: float) -> float:
     was passed in, so a line carrying a character the font cannot encode is
     still fitted to the width of the part that gets drawn. The number is
     deliberately not the width the line had on the page --
-    :func:`pdf_writer.overlay_text_on_page` divides the detected box by it and
+    :func:`text_overlay.overlay_text_on_page` divides the detected box by it and
     scales the line horizontally to fit, so what matters is only that it is
     proportional to the character count.
     """

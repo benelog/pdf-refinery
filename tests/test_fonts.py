@@ -14,7 +14,7 @@ from pdf_refinery.fonts import (
     unsupported_chars,
 )
 from pdf_refinery.ocr_engine import OcrResult
-from pdf_refinery.pdf_writer import overlay_text_on_page
+from pdf_refinery.text_overlay import overlay_text_on_page
 from tests.helpers import opened, pdfium_text, source_pdf, spans, written
 
 # One line per script the font is claimed to cover, plus the two the built-in
@@ -189,7 +189,7 @@ class TestStretchingALinePastItsBox:
     """Where the width fitting stops being free, and for whom.
 
     Every glyph in this font advances the same half em, which is wrong for
-    every script and deliberately so: :func:`pdf_writer.overlay_text_on_page`
+    every script and deliberately so: :func:`text_overlay.overlay_text_on_page`
     scales the line horizontally until it fills the detected box, so the
     advance cancels out. What does not cancel out is what a reader makes of
     the gaps that scaling leaves between characters. MuPDF 1.28 reads a gap
