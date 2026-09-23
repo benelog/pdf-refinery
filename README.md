@@ -42,13 +42,19 @@ language also downloads 100–150 MB of models to `~/.paddlex`.
 `skills/pdf-ocr/SKILL.md` teaches a coding agent to use this tool. It installs
 the tool if it is missing, establishes the language before running, tries two
 pages first, and asks before sending pages to OpenAI with `--engine codex`.
-Link it where each agent looks for user skills:
+Enable it per project by linking it into the project's skill directories.
+Each agent then offers it only inside that project:
 
 ```bash
-git clone git@github.com:benelog/pdf-refinery.git
-ln -s "$PWD/pdf-refinery/skills/pdf-ocr" ~/.agents/skills/pdf-ocr   # Codex
-ln -s "$PWD/pdf-refinery/skills/pdf-ocr" ~/.claude/skills/pdf-ocr   # Claude Code
+git clone git@github.com:benelog/pdf-refinery.git ~/pdf-refinery
+cd /path/to/your/project
+mkdir -p .agents/skills .claude/skills
+ln -s ~/pdf-refinery/skills/pdf-ocr .agents/skills/pdf-ocr   # Codex
+ln -s ~/pdf-refinery/skills/pdf-ocr .claude/skills/pdf-ocr   # Claude Code
 ```
+
+Removing the two links turns it off again. To have it everywhere instead, link
+it into `~/.agents/skills` and `~/.claude/skills`.
 
 Then ask either agent something like "make scan.pdf searchable".
 
