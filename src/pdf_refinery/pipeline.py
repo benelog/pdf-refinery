@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from pdf_refinery.ocr_engine import (
+    DEFAULT_ENGINE,
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
     create_engine,
@@ -197,6 +198,8 @@ def run_ocr_pipeline(
     unwarp: bool = False,
     textline_orientation: bool = DEFAULT_TEXTLINE_ORIENTATION,
     auto_rotate: bool = False,
+    engine: str = DEFAULT_ENGINE,
+    codex_model: str | None = None,
 ) -> None:
     """Run the full OCR pipeline on a scanned PDF.
 
@@ -226,6 +229,9 @@ def run_ocr_pipeline(
             before recognising them. See :class:`ocr_engine.PaddleEngine`.
         auto_rotate: Detect a page scanned sideways or upside down, read it
             the right way up, and place the text back on the page as it is.
+        engine: A key of :data:`ocr_engine.ENGINES`.
+        codex_model: The model the ``codex`` engine runs; its own default
+            when None. Ignored by other engines.
     """
     if langs is None:
         langs = ["en"]
@@ -270,12 +276,21 @@ def run_ocr_pipeline(
         click.echo(f"Processing {len(pending)} page(s) from '{input_path.name}'...")
     click.echo(f"Languages: {', '.join(langs)}")
 
+    engine_options = {}
+    if engine == "codex":
+        from pdf_refinery.llm_engine import DEFAULT_CODEX_MODEL
+
+        codex_model = codex_model or DEFAULT_CODEX_MODEL
+        engine_options["codex_model"] = codex_model
+        click.echo(f"Engine: codex ({codex_model}); page images are sent to OpenAI.")
     engines = [
         create_engine(
+            engine,
             lang=lang,
             rec_model=rec_model,
             unwarp=unwarp,
             textline_orientation=textline_orientation,
+            **engine_options,
         )
         for lang in langs
     ]
@@ -334,7 +349,9 @@ def run_ocr_pipeline(
 
             results = []
             for engine in engines:
-                results.extend(engine.recognize(preprocessed, confidence=confidence))
+                results.extend(engine.recognize(
+                    preprocessed, confidence=confidence, rendered=straight,
+                ))
             if len(engines) > 1:
                 results = deduplicate_results(results)
             results = unrotate_results(results, rotation, straight.shape)

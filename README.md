@@ -70,6 +70,8 @@ pdf-refinery ocr -l korean --resume scanned_book.pdf
 | `--preprocess` | `binarize` | `binarize` or `none` (see [Tuning](#tuning)) |
 | `--rec-model` | per language | Override PaddleOCR's recognition model |
 | `--auto-rotate` | off | Read pages scanned sideways or upside down |
+| `--engine` | `paddle` | `codex` has a vision model read the text (see [Reading with a model](#reading-with-a-model-through-codex)) |
+| `--codex-model` | `gpt-6-sol` | Model the `codex` engine runs |
 | `--textline-orientation` | off | Let the recogniser turn individual lines |
 | `--unwarp` | off | Flatten page curvature before detection |
 | `--force-ocr` | off | Re-OCR pages that already contain text |
@@ -233,6 +235,54 @@ The last row is the one to take seriously. Reading a Korean scan as English is
 not a degraded result, it is an empty one — and the run still exits 0 and writes
 a believable-looking PDF. The reverse is harmless, because the Korean model's
 dictionary contains Latin. That asymmetry is why `-l` has no default.
+
+### Reading with a model through Codex
+
+`--engine codex` keeps PaddleOCR's line positions but has a vision model read
+the text, through the [Codex CLI](https://github.com/openai/codex). Codex must
+be installed and logged in; the run uses whatever account it is logged in with.
+
+```bash
+pdf-refinery ocr -l korean --engine codex scanned_book.pdf
+```
+
+**Every page image is sent to OpenAI.** That is why it is not the default.
+
+PaddleOCR still finds every line and reads it. The model transcribes the whole
+page, and that transcription is aligned character by character against
+PaddleOCR's lines, so each box gets the model's reading of the text inside it.
+The invisible layer needs both halves: a model returns no coordinates, and
+PaddleOCR reads less well. A line whose aligned text no longer resembles what
+PaddleOCR read in that box keeps PaddleOCR's text. So does a whole page whose
+Codex call fails, with a warning, so one bad call does not end a long run.
+Specks that both readings agree hold no text are dropped.
+
+Measured over `bench/`, through the whole pipeline and read back out of the
+output PDF:
+
+| | sample-1 chars / words | sample-2 chars / words | sample-3 chars / words | s/page |
+|---|---|---|---|---|
+| `paddle` | 22 / 56 (6.9%) | 10 / 71 (23.5%) | 2 / 5 | 16–31 |
+| `codex`, `gpt-6-sol` | **7 / 16 (2.0%)** | **1 / 1 (0.3%)** | **0 / 4** | 23–37 |
+
+The model reads corner brackets `「」《》` that PaddleOCR's Korean dictionary
+does not have, and gets the word spacing of large type right where PaddleOCR
+runs it together. It is handed the page as rendered, not as binarized for
+PaddleOCR: thresholding cost it 12–13 character errors on `sample-1` against 7.
+
+At API list prices, measured tokens put a 300-page book at about **$3** with
+`gpt-6-sol` ($2 / $10 per million input / output tokens, about 2,800 image
+tokens and 500 output tokens a page). Codex adds its own ~18k-token prompt to
+every call. Run through a ChatGPT login, it counts against that plan's usage
+instead.
+
+`--codex-model gpt-6-luna` is about twenty times cheaper and not worth it. Read
+on its own it made 394 character errors on `sample-1` against PaddleOCR's 22,
+and not by failing to read. It rewrote text into other plausible words:
+`캐번디시` became `케임브리지`, and a whole clause became `를 만나`.
+
+The model follows the prompt's instruction to transcribe as printed, but not
+perfectly: it corrected the leaflet's own typo `누루면서` to `누르면서`.
 
 ### Pages that are not the right way up
 

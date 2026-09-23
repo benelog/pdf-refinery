@@ -111,9 +111,9 @@ class TestRunOcrPipeline:
 
         assert mock_engine_cls.call_count == 2
         mock_engine_cls.assert_any_call(
-            lang="en", rec_model=None, unwarp=False, textline_orientation=False)
+            "paddle", lang="en", rec_model=None, unwarp=False, textline_orientation=False)
         mock_engine_cls.assert_any_call(
-            lang="korean", rec_model=None, unwarp=False, textline_orientation=False)
+            "paddle", lang="korean", rec_model=None, unwarp=False, textline_orientation=False)
 
     @patch("pdf_refinery.pipeline.overlay_text_on_page")
     @patch("pdf_refinery.pdf_document.Page.to_image")
@@ -138,6 +138,32 @@ class TestRunOcrPipeline:
         )
 
         assert mock_engine_cls.call_args.kwargs["textline_orientation"] is True
+
+    @patch("pdf_refinery.pipeline.overlay_text_on_page")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
+    @patch("pdf_refinery.pipeline.create_engine")
+    def test_the_codex_engine_gets_its_model_and_the_unthresholded_page(
+        self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path
+    ):
+        # The model reads the rendered page, not the binarized one PaddleOCR
+        # gets; thresholding cost it characters on the Korean corpus.
+        mock_engine = MagicMock()
+        mock_engine.recognize.return_value = []
+        mock_engine_cls.return_value = mock_engine
+        page = np.full((792, 612, 3), 128, dtype=np.uint8)
+        mock_to_image.return_value = page
+        mock_overlay.return_value = OverlayStats(0, 0)
+
+        run_ocr_pipeline(
+            input_path=tmp_pdf, output_path=tmp_path / "out.pdf",
+            langs=["korean"], engine="codex",
+        )
+
+        assert mock_engine_cls.call_args.args == ("codex",)
+        assert mock_engine_cls.call_args.kwargs["codex_model"] == "gpt-6-sol"
+        call = mock_engine.recognize.call_args
+        assert call.kwargs["rendered"] is page
+        assert set(np.unique(call.args[0])) <= {0, 255}
 
     def test_rejects_output_equal_to_input(self, tmp_pdf):
         with pytest.raises(click.ClickException):

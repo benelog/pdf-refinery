@@ -20,8 +20,10 @@ import click
 
 from pdf_refinery.ocr_engine import (
     COMMON_LANGS,
+    DEFAULT_ENGINE,
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
+    ENGINES,
     PREPROCESS_MODES,
     SERVER_REC_LANGS,
     SERVER_REC_MODEL,
@@ -135,13 +137,25 @@ def main():
               help="Detect pages scanned sideways or upside down and read "
                    "them the right way up. The page itself is left as it is; "
                    "only the text layer is placed correctly.")
+@click.option("--engine", type=click.Choice(sorted(ENGINES)), default=DEFAULT_ENGINE,
+              show_default=True,
+              help="'paddle' reads the page with PaddleOCR on this machine. "
+                   "'codex' keeps PaddleOCR's line positions but has a vision "
+                   "model read the text through the Codex CLI, which must be "
+                   "installed and logged in. Much more accurate on Korean, "
+                   "but every page image is sent to OpenAI.")
+@click.option("--codex-model", default=None, metavar="MODEL",
+              help="Model the codex engine runs. Defaults to gpt-6-sol; "
+                   "gpt-6-luna is cheaper but was far less accurate than "
+                   "PaddleOCR on the Korean benchmark.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
 def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         pages: str | None, confidence: float, force_ocr: bool, overwrite: bool,
         skip_text_threshold: int, sidecar: Path | None,
         checkpoint_every: int, resume: bool, preprocess: str,
         rec_model: str | None, unwarp: bool, textline_orientation: bool,
-        auto_rotate: bool, verbose: bool):
+        auto_rotate: bool, engine: str, codex_model: str | None,
+        verbose: bool):
     """Apply OCR to a scanned PDF to make it searchable."""
     from pdf_refinery.pipeline import progress_path_for, run_ocr_pipeline
 
@@ -168,6 +182,26 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
                 f"{', '.join(sorted(SERVER_REC_LANGS))}; it has no characters "
                 f"for {', '.join(uncovered)}. Drop --rec-model to use the "
                 f"model built for that language."
+            )
+
+    if codex_model is not None and engine != "codex":
+        raise click.UsageError("--codex-model only applies with --engine codex.")
+    if engine == "codex":
+        from pdf_refinery.llm_engine import codex_available
+
+        if not codex_available():
+            raise click.UsageError(
+                "--engine codex needs the 'codex' command, which is not on "
+                "PATH. Install the Codex CLI and log in, or use --engine paddle."
+            )
+        if len(lang) > 1:
+            # Each language builds its own engine, so each would send every
+            # page to the model again -- for a transcription that does not
+            # depend on the language at all.
+            raise click.UsageError(
+                "--engine codex takes a single -l: the model reads every "
+                "script on the page, and each extra language would send every "
+                "page again."
             )
 
     if output is None:
@@ -220,4 +254,6 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         unwarp=unwarp,
         textline_orientation=textline_orientation,
         auto_rotate=auto_rotate,
+        engine=engine,
+        codex_model=codex_model,
     )

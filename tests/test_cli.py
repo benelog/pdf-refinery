@@ -232,6 +232,51 @@ class TestResumeOptions:
         assert kw["skip_text_threshold"] == 40
 
 
+@patch("pdf_refinery.pipeline.run_ocr_pipeline")
+class TestEngineOption:
+    def test_paddle_is_the_default(self, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, ["ocr", str(tmp_pdf), "-l", "en"])
+        assert result.exit_code == 0
+        assert mock_pipeline.call_args.kwargs["engine"] == "paddle"
+        assert mock_pipeline.call_args.kwargs["codex_model"] is None
+
+    @patch("pdf_refinery.llm_engine.codex_available", return_value=True)
+    def test_codex_and_its_model_reach_the_pipeline(self, _, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "korean",
+            "--engine", "codex", "--codex-model", "gpt-6-luna",
+        ])
+        assert result.exit_code == 0, result.output
+        kw = mock_pipeline.call_args.kwargs
+        assert (kw["engine"], kw["codex_model"]) == ("codex", "gpt-6-luna")
+
+    @patch("pdf_refinery.llm_engine.codex_available", return_value=False)
+    def test_codex_without_the_command_fails_up_front(self, _, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(
+            main, ["ocr", str(tmp_pdf), "-l", "korean", "--engine", "codex"]
+        )
+        assert result.exit_code != 0
+        assert "not on PATH" in result.output
+        mock_pipeline.assert_not_called()
+
+    @patch("pdf_refinery.llm_engine.codex_available", return_value=True)
+    def test_codex_takes_one_language(self, _, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "korean", "-l", "en", "--engine", "codex",
+        ])
+        assert result.exit_code != 0
+        assert "single -l" in result.output
+        mock_pipeline.assert_not_called()
+
+    def test_a_codex_model_without_the_codex_engine_is_refused(self, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(
+            main, ["ocr", str(tmp_pdf), "-l", "en", "--codex-model", "gpt-6-sol"]
+        )
+        assert result.exit_code != 0
+        assert "--engine codex" in result.output
+        mock_pipeline.assert_not_called()
+
+
 class TestStartupCost:
     """--help must not pay for PaddleOCR's import or its network check."""
 

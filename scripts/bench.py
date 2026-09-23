@@ -105,7 +105,14 @@ VARIANTS: dict[str, dict | Callable] = {
     # Was the default until it was measured: the per-line orientation
     # classifier turning upright lines over and recognising them upside down.
     "textline-ori": {"textline_orientation": True},
+    # Sends every page to OpenAI through the Codex CLI, so it is not run by
+    # --all's habit of measuring everything cheaply; ask for it by name.
+    "codex-sol": {"engine": "codex", "codex_model": "gpt-6-sol"},
 }
+
+# Variants --all leaves out: each costs money and sends the corpus off the
+# machine, which is a decision to take per run rather than by default.
+EXTERNAL_VARIANTS = frozenset({"codex-sol"})
 
 
 def resolve_variant(name: str, corpus: "Corpus") -> dict | None:
@@ -515,7 +522,7 @@ def main() -> int:
 
     selected = list(corpora.values()) if args.corpus is None else [corpora[args.corpus]]
     if args.all:
-        names = list(VARIANTS)
+        names = [n for n in VARIANTS if n not in EXTERNAL_VARIANTS]
     elif args.variant:
         names = [args.variant]
     else:

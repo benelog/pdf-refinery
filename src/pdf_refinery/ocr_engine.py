@@ -12,6 +12,7 @@ answer instantly and offline.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -424,10 +425,16 @@ class TextRecogniser(Protocol):
     An implementation must return results in reading order and must already
     have applied ``confidence``, so the caller cannot forget to. Boxes are in
     the pixel coordinates of the image it was given.
+
+    ``image`` has been through :func:`preprocess_image`; ``rendered``, when
+    given, is the same page before that, in the same frame. Thresholding
+    suits PaddleOCR and harms a model reading the page itself, so an engine
+    may read one and place boxes on the other.
     """
 
     def recognize(
-        self, image: np.ndarray, confidence: float = 0.5
+        self, image: np.ndarray, confidence: float = 0.5,
+        rendered: np.ndarray | None = None,
     ) -> list[OcrResult]:
         """Read ``image`` (RGB) and return the lines found, in reading order."""
         ...
@@ -493,12 +500,16 @@ class PaddleEngine:
             **({"text_recognition_model_name": rec_model} if rec_model else {}),
         )
 
-    def recognize(self, image: np.ndarray, confidence: float = 0.5) -> list[OcrResult]:
+    def recognize(
+        self, image: np.ndarray, confidence: float = 0.5,
+        rendered: np.ndarray | None = None,
+    ) -> list[OcrResult]:
         """Run OCR on a page image and return filtered results in reading order.
 
         Args:
             image: Page image as a numpy array in RGB order.
             confidence: Minimum confidence threshold.
+            rendered: Unused; PaddleOCR reads the preprocessed ``image``.
 
         Returns:
             List of OcrResult with confidence above the threshold.
@@ -523,27 +534,33 @@ class PaddleEngine:
         return sort_reading_order(results)
 
 
-# The engines available to build. One entry today; the point of the mapping is
-# that adding a second is a line here plus a class, not a change to the
-# pipeline. Deliberately not exposed as a CLI option while it holds one name --
-# an option with a single choice tells a user nothing and implies a decision
-# they do not have. Add `--engine` with a Choice over these keys at the same
-# time as the second entry.
+def _codex_engine(**options) -> TextRecogniser:
+    # Imported on use: the module needs click and the codex command, neither
+    # of which the default engine should depend on.
+    from pdf_refinery.llm_engine import CodexEngine
+
+    return CodexEngine(**options)
+
+
+# The engines available to build, exposed as ``--engine``.
 #
-# Open question, and the reason this seam exists: whether another engine is
-# worth having. The candidates and what each would be for:
+#   paddle   PaddleOCR alone, on this machine. The default: nothing leaves it.
+#   codex    PaddleOCR's boxes with the text read by a vision model through
+#            the Codex CLI; see llm_engine. Far more accurate on the Korean
+#            corpora -- 22 character errors to 6 on sample-1, 71 word errors to
+#            2 on sample-2 -- but every page image is sent to OpenAI.
+#
+# Candidates still unmeasured, and what each would be for:
 #
 #   RapidOCR    the same PP-OCR models under ONNXRuntime. No accuracy change to
 #               be expected -- the point would be dropping the paddlepaddle
 #               dependency, which is most of this project's install size.
 #   Tesseract   mature and light, but likely behind PP-OCRv5 on Korean.
 #   Surya       strong on line detection and reading order; slow without a GPU.
-#
-# None has been measured. Each means installing a large runtime, which is a
-# decision about someone's machine rather than about this code. The benchmark
-# in bench/ is what a comparison would run against, and it now covers two
-# scripts and three scanners, so the comparison is finally worth running.
-ENGINES: dict[str, type] = {"paddle": PaddleEngine}
+ENGINES: dict[str, Callable[..., TextRecogniser]] = {
+    "paddle": PaddleEngine,
+    "codex": _codex_engine,
+}
 
 DEFAULT_ENGINE = "paddle"
 
