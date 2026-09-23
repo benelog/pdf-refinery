@@ -170,7 +170,7 @@ hand-transcribed ground truth. Character error rates are whitespace-insensitive.
 
 | Setting | sample-1 | sample-2 | sample-3 |
 |---|---|---|---|
-| **defaults** (300 DPI, `binarize`) | **0.011** | **0.017** | 0.003 |
+| **defaults** (300 DPI, `binarize`) | **0.009** | **0.010** | 0.001 |
 | `--preprocess none` | 0.015 | 0.025 | 0.002 |
 | `--dpi 240` | 0.011 | 0.016 | 0.002 |
 | `--dpi 150` | 0.015 | 0.007 | 0.002 |
@@ -179,6 +179,35 @@ hand-transcribed ground truth. Character error rates are whitespace-insensitive.
 | `--textline-orientation` | 0.012 | 0.232 | 0.003 |
 | the text layer the PDF already had | 0.017 | 0.146 | — |
 | the wrong `-l` | 0.969 | 0.940 | 0.003 |
+
+The rows below the first were measured before the threshold and detector
+changes described next, so compare each with the 0.011 / 0.017 / 0.003 the
+defaults scored then rather than with the first row.
+
+Three changes since then were measured the same way and are now built in:
+
+- **The binarization window is wider** — 51 pixels with an offset of 15, from
+  31 and 10 — and **the detector's box threshold is PaddleOCR's own 0.6**,
+  from 0.5. Together they took character errors from 25 to 22 on `sample-1`
+  and 15 to 10 on `sample-2`, and left `sample-3` alone. Every window from 41
+  to 71 with an offset of 12 to 20 beat the old setting on both Korean scans,
+  so this is a plateau, not a lucky point. The box threshold is mostly what
+  stops specks around the leaflet's photograph being read as `.*-1·*`.
+- **The space after a period or comma is put back** where Hangul sits on both
+  sides. The recogniser returns `거두었다.단지` for `거두었다. 단지`: the
+  characters are right, but the page extracts as one run-on word and a word
+  search for `단지` misses it. Word errors on `sample-1` fell from 126 to 56 of
+  806, from 15.6% to 7.0%; on `sample-2` from 83 to 71. A comma after a single
+  syllable is left alone, because lists like `(시,분,초)` are often printed
+  unspaced.
+- Measured and rejected: `unclip_ratio` 1.5 or 2.0 (worse on both Korean
+  scans), no denoise before thresholding (leaflet errors more than doubled),
+  Otsu's global threshold, and PP-OCRv6's detector in place of PP-OCRv5's for
+  Korean (faster, but almost twice the word errors on the leaflet).
+
+Still not fixed: the Korean recognition model's dictionary has no `「」《》`,
+so corner brackets come back as `[ ]` and `< )`, and it reads `톰` as `통`
+more often than not. Both are the model's limits, not the pipeline's.
 
 Things worth knowing before you turn a knob:
 

@@ -11,6 +11,7 @@ does not need it. Keeping it out of the import graph is what lets ``--help``
 answer instantly and offline.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -133,6 +134,29 @@ def preprocess_image(img: np.ndarray, mode: str = DEFAULT_PREPROCESS) -> np.ndar
     from after that fix, and are the first taken over three scanners and two
     scripts.
 
+    The threshold neighbourhood is 51 pixels with an offset of 15, not the
+    31 and 10 it started at. The likely reason, not separately verified: a
+    300 DPI body line is 40-60 pixels tall, so a 31-pixel window can sit
+    inside a dense Hangul syllable and threshold its strokes against
+    themselves, where the wider window always takes in some paper. Measured
+    together with the detector's box threshold (see :class:`PaddleEngine`),
+    in character errors ignoring whitespace:
+
+    ============  ========  =========
+    corpus        31 / 10   51 / 15
+    ============  ========  =========
+    sample-1      25        22
+    sample-2      15        10
+    sample-3       2         2
+    ============  ========  =========
+
+    The neighbours were measured too, so this is not a lucky point: every
+    window from 41 to 71 with an offset from 12 to 20 beat 31 / 10 on both
+    Korean scans and left the Latin one alone. An offset of 10 is where it
+    turns -- 51 / 10 made 26 errors on sample-1 -- and dropping the denoise
+    more than doubled the errors on the leaflet, so neither is worth saving
+    the time.
+
     Args:
         img: Page image in RGB order.
         mode: One of :data:`PREPROCESS_MODES`.
@@ -155,7 +179,7 @@ def preprocess_image(img: np.ndarray, mode: str = DEFAULT_PREPROCESS) -> np.ndar
     denoised = cv2.fastNlMeansDenoising(gray, h=10)
     binary = cv2.adaptiveThreshold(
         denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 31, 10,
+        cv2.THRESH_BINARY, 51, 15,
     )
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
@@ -310,6 +334,47 @@ def deduplicate_results(
     return [r for r, _ in kept]
 
 
+_HANGUL = "가-힣"
+
+# A sentence mark between a Hangul syllable and the next word, where the page
+# has a space the recogniser did not return. "(" is included because a
+# parenthesis opening the next sentence goes missing the same way.
+_MISSING_SPACE_AFTER_STOP = re.compile(f"(?<=[{_HANGUL}])([.?!])(?=[{_HANGUL}(])")
+
+# A comma closing a word of two or more syllables. Lists of single syllables --
+# the leaflet in bench/sample-2 prints "(시,분,초)" -- are set without spaces
+# often enough that one syllable is not taken as evidence of a missing space.
+_MISSING_SPACE_AFTER_COMMA = re.compile(f"(?<=[{_HANGUL}]{{2}}),(?=[{_HANGUL}])")
+
+
+def restore_punctuation_spacing(text: str) -> str:
+    """Put back the space after punctuation that the Korean recogniser drops.
+
+    The gap after a period or comma in set Korean text is narrow, and the
+    recogniser reads it as no gap at all: "거두었다. 단지" comes back as
+    "거두었다.단지". The characters are right, so character error hardly
+    registers it, but the page then extracts as one run-on word and a word
+    search for "단지" or a double-click on it no longer finds the word. Korean
+    orthography sets a space after both marks, so the space is restored where
+    a Hangul syllable sits on each side.
+
+    Measured over ``bench/``, word errors against the ground truth:
+
+    ============  ==========
+    corpus        words
+    ============  ==========
+    sample-1      126 -> 61 of 806
+    sample-2       83 -> 76 of 302
+    sample-3        5 -> 5 of 474
+    ============  ==========
+
+    Character error is unchanged without whitespace, and the Latin corpus is
+    untouched by construction: nothing here fires without Hangul on both sides.
+    """
+    text = _MISSING_SPACE_AFTER_STOP.sub(r"\1 ", text)
+    return _MISSING_SPACE_AFTER_COMMA.sub(", ", text)
+
+
 def sort_reading_order(results: list[OcrResult]) -> list[OcrResult]:
     """Order detections the way the page is read: top to bottom, left to right.
 
@@ -410,7 +475,17 @@ class PaddleEngine:
             use_textline_orientation=textline_orientation,
             lang=lang,
             text_det_thresh=0.3,
-            text_det_box_thresh=0.5,
+            # PaddleOCR's own default, after 0.5 had been chosen without a
+            # benchmark to check it. What 0.5 let through was not faint text
+            # but specks: around the photograph on the leaflet in
+            # bench/sample-2 it kept boxes that read as ".*-1·*" and similar,
+            # and 0.6 dropped them -- 15 character errors to 11 there, nothing
+            # lost on the other two corpora. 0.7 cut the leaflet further, to 8,
+            # and moved nothing else; one corpus is not enough to trade away
+            # the margin a faint scan would need.
+            text_det_box_thresh=0.6,
+            # Unmeasured when chosen, and measured since: 1.5 and 2.0 both
+            # lose on sample-1 and 2.0 badly on sample-2, so 1.8 stays.
             text_det_unclip_ratio=1.8,
             text_recognition_batch_size=16,
             use_doc_unwarping=unwarp,
@@ -440,8 +515,11 @@ class PaddleEngine:
         results = []
         for text, conf, poly in zip(texts, scores, polys):
             if conf >= confidence:
-                bbox = poly.tolist()
-                results.append(OcrResult(text=text, confidence=conf, bbox=bbox))
+                results.append(OcrResult(
+                    text=restore_punctuation_spacing(text),
+                    confidence=conf,
+                    bbox=poly.tolist(),
+                ))
         return sort_reading_order(results)
 
 

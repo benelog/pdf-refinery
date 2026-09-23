@@ -14,6 +14,7 @@ from pdf_refinery.ocr_engine import (
     PaddleEngine,
     create_engine,
     preprocess_image,
+    restore_punctuation_spacing,
     unrotate_results,
     upright,
 )
@@ -131,6 +132,49 @@ class TestWholePageRotation:
     def test_no_rotation_leaves_the_results_alone(self):
         r = [OcrResult("x", 0.9, [[1, 2], [3, 2], [3, 4], [1, 4]])]
         assert unrotate_results(r, 0, (40, 30)) is r
+
+
+class TestPunctuationSpacing:
+    """The space the Korean recogniser drops after a period or comma.
+
+    Without it a sentence boundary extracts as one run-on word, and a word
+    search for the word after it fails. Restoring it halved the word errors on
+    bench/sample-1.
+    """
+
+    @pytest.mark.parametrize("read, meant", [
+        ("거두었다.단지 작문", "거두었다. 단지 작문"),
+        ("아닐까?기체와", "아닐까? 기체와"),
+        ("있다!있었다", "있다! 있었다"),
+        ("합니다.(월", "합니다. (월"),
+        ("17세까지,우리나라로", "17세까지, 우리나라로"),
+    ])
+    def test_the_missing_space_is_restored(self, read, meant):
+        assert restore_punctuation_spacing(read) == meant
+
+    @pytest.mark.parametrize("text", [
+        # Already spaced: nothing to add, and nothing doubled.
+        "거두었다. 단지",
+        # A list of single syllables is often printed without spaces.
+        "시간(시,분,초)및 날짜(년,월,일)",
+        # Latin and numbers are left alone -- the rule needs Hangul either side.
+        "J.J.톰슨", "e.g.the", "1.5배", "end.The",
+        # An ellipsis is not a sentence stop followed by a word.
+        "그래서...그는",
+    ])
+    def test_text_that_is_not_missing_a_space_is_unchanged(self, text):
+        assert restore_punctuation_spacing(text) == text
+
+    @patch("paddleocr.PaddleOCR")
+    def test_the_engine_applies_it(self, mock_paddle_cls):
+        mock_paddle_cls.return_value.predict.return_value = [{
+            "rec_texts": ["거두었다.단지"],
+            "rec_scores": [0.9],
+            "dt_polys": [np.array([[0, 0], [10, 0], [10, 10], [0, 10]])],
+        }]
+        engine = PaddleEngine(lang="korean")
+        results = engine.recognize(np.zeros((20, 20, 3), dtype=np.uint8))
+        assert results[0].text == "거두었다. 단지"
 
 
 class TestPreprocessDefault:
