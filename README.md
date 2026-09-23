@@ -25,9 +25,32 @@ A command-line tool that transforms your scanned book PDFs into fully searchable
 
 ## Installation
 
+The package is not on PyPI yet; install it from GitHub. Pin Python 3.12, since
+PaddlePaddle only ships wheels for a few Python versions:
+
 ```bash
-pip install pdf-refinery
+uv tool install --python 3.12 git+https://github.com/benelog/pdf-refinery
+# or
+pipx install --python python3.12 git+https://github.com/benelog/pdf-refinery
 ```
+
+The install is about 1.2 GB, mostly PaddlePaddle. The first run for each
+language also downloads 100–150 MB of models to `~/.paddlex`.
+
+### Agent skill (Claude Code and Codex)
+
+`skills/pdf-ocr/SKILL.md` teaches a coding agent to use this tool. It installs
+the tool if it is missing, establishes the language before running, tries two
+pages first, and asks before sending pages to OpenAI with `--engine codex`.
+Link it where each agent looks for user skills:
+
+```bash
+git clone git@github.com:benelog/pdf-refinery.git
+ln -s "$PWD/pdf-refinery/skills/pdf-ocr" ~/.agents/skills/pdf-ocr   # Codex
+ln -s "$PWD/pdf-refinery/skills/pdf-ocr" ~/.claude/skills/pdf-ocr   # Claude Code
+```
+
+Then ask either agent something like "make scan.pdf searchable".
 
 -----
 
