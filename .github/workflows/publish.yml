@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Refuse anything but a version tag
         # A version on PyPI can never be replaced, so an upload from a branch
@@ -31,12 +31,14 @@ jobs:
             echo "Tag v$tag does not match pyproject.toml version $version"; exit 1
           fi
 
-      - uses: astral-sh/setup-uv@v6
+      # setup-uv publishes no major-version tag since v8, so the release is
+      # named in full; raise it by hand.
+      - uses: astral-sh/setup-uv@v10.2.0
 
       - name: Build
         run: uv build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -48,7 +50,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
