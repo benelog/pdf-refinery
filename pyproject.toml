@@ -76,5 +76,13 @@ pdf-refinery = "pdf_refinery.cli:main"
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov", "PyMuPDF>=1.24"]
 
+# The source distribution carries the package and nothing else. Left to its
+# default, hatchling packs everything git tracks, which includes the benchmark
+# corpora and the test PDFs -- two of them scans of published material with no
+# clear licence (see bench/README.md). They stay in the repository for local
+# measurement, but uploading them to PyPI would be redistributing them.
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

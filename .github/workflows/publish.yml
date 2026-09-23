@@ -1,0 +1,56 @@
+name: Publish to PyPI
+
+# Runs when a GitHub release is published, or by hand against a tag:
+#   gh workflow run publish.yml --ref v1.0.0
+#
+# Uploads through PyPI trusted publishing, so no token is stored anywhere. The
+# PyPI project must list this repository, this workflow file and the `pypi`
+# environment as a trusted publisher.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse anything but a version tag
+        # A version on PyPI can never be replaced, so an upload from a branch
+        # or from a tag that disagrees with pyproject.toml must not happen.
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "Run this against a v* tag, not $GITHUB_REF"; exit 1 ;;
+          esac
+          tag="${GITHUB_REF#refs/tags/v}"
+          version=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match pyproject.toml version $version"; exit 1
+          fi
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

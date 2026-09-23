@@ -20,17 +20,17 @@ choice that can be checked on two pages is checked there first.
 command -v pdf-refinery && pdf-refinery --version
 ```
 
-If that fails, install it. It is not on PyPI; install from GitHub with `uv`
-(preferred) or `pipx`, pinning Python 3.12. PaddlePaddle only ships wheels for
-a few Python versions, and the tool holds PaddlePaddle to 3.1–3.2 because other
-versions fail to run the models.
+If that fails, install it from PyPI with `uv` (preferred) or `pipx`, pinning
+Python 3.12. PaddlePaddle only ships wheels for a few Python versions, and the
+tool holds PaddlePaddle to 3.1–3.2 because other versions fail to run the
+models.
 
 ```bash
 # uv (install uv first if needed: curl -LsSf https://astral.sh/uv/install.sh | sh)
-uv tool install --python 3.12 git+https://github.com/benelog/pdf-refinery
+uv tool install --python 3.12 pdf-refinery
 
 # or pipx
-pipx install --python python3.12 git+https://github.com/benelog/pdf-refinery
+pipx install --python python3.12 pdf-refinery
 ```
 
 Then run `pdf-refinery --version` again. If the shell cannot find it, the

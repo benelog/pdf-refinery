@@ -25,14 +25,17 @@ A command-line tool that transforms your scanned book PDFs into fully searchable
 
 ## Installation
 
-The package is not on PyPI yet; install it from GitHub. Pin Python 3.12, since
-PaddlePaddle only ships wheels for a few Python versions:
-
 ```bash
-uv tool install --python 3.12 git+https://github.com/benelog/pdf-refinery
+uv tool install --python 3.12 pdf-refinery
 # or
-pipx install --python python3.12 git+https://github.com/benelog/pdf-refinery
+pipx install --python python3.12 pdf-refinery
+# or, into an environment you manage
+pip install pdf-refinery
 ```
+
+Pinning Python 3.12 is the safe choice. PaddlePaddle only ships wheels for a
+few Python versions. An isolated tool install also keeps a PaddlePaddle outside
+3.1–3.2 elsewhere on the machine from being picked up.
 
 The install is about 1.2 GB, mostly PaddlePaddle. The first run for each
 language also downloads 100–150 MB of models to `~/.paddlex`.
