@@ -23,6 +23,7 @@ from pdf_refinery.ocr_engine import (
     DEFAULT_ENGINE,
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
+    ENGINE_COMMANDS,
     ENGINES,
     PREPROCESS_MODES,
     SERVER_REC_LANGS,
@@ -140,14 +141,23 @@ def main():
 @click.option("--engine", type=click.Choice(sorted(ENGINES)), default=DEFAULT_ENGINE,
               show_default=True,
               help="'paddle' reads the page with PaddleOCR on this machine. "
-                   "'codex' keeps PaddleOCR's line positions but has a vision "
-                   "model read the text through the Codex CLI, which must be "
-                   "installed and logged in. Much more accurate on Korean, "
-                   "but every page image is sent to OpenAI.")
+                   "'codex' and 'claude' keep PaddleOCR's line positions but "
+                   "have a vision model read the text, through the Codex CLI "
+                   "or Claude Code, which must be installed and logged in. "
+                   "Much more accurate on Korean, but every page image is "
+                   "sent to OpenAI or to Anthropic. 'codex+claude' has both "
+                   "read every page and votes between them, with PaddleOCR "
+                   "settling disagreements; every page image is sent to both.")
 @click.option("--codex-model", default=None, metavar="MODEL",
-              help="Model the codex engine runs. Defaults to gpt-6-sol; "
-                   "gpt-6-luna is cheaper but was far less accurate than "
-                   "PaddleOCR on the Korean benchmark.")
+              help="Model the codex and codex+claude engines run through "
+                   "Codex. Defaults to gpt-6-sol; gpt-6-luna is cheaper but "
+                   "was far less accurate than PaddleOCR on the Korean "
+                   "benchmark.")
+@click.option("--claude-model", default=None, metavar="MODEL",
+              help="Model the claude and codex+claude engines run through "
+                   "Claude Code, by alias (opus, sonnet) or full name. "
+                   "Defaults to opus, which Claude Code resolves to the "
+                   "latest Opus.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
 def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         pages: str | None, confidence: float, force_ocr: bool, overwrite: bool,
@@ -155,7 +165,7 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         checkpoint_every: int, resume: bool, preprocess: str,
         rec_model: str | None, unwarp: bool, textline_orientation: bool,
         auto_rotate: bool, engine: str, codex_model: str | None,
-        verbose: bool):
+        claude_model: str | None, verbose: bool):
     """Apply OCR to a scanned PDF to make it searchable."""
     from pdf_refinery.pipeline import progress_path_for, run_ocr_pipeline
 
@@ -184,22 +194,33 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
                 f"model built for that language."
             )
 
-    if codex_model is not None and engine != "codex":
-        raise click.UsageError("--codex-model only applies with --engine codex.")
-    if engine == "codex":
-        from pdf_refinery.llm_engine import codex_available
+    commands = ENGINE_COMMANDS[engine]
+    if codex_model is not None and "codex" not in commands:
+        raise click.UsageError(
+            "--codex-model only applies with --engine codex or codex+claude."
+        )
+    if claude_model is not None and "claude" not in commands:
+        raise click.UsageError(
+            "--claude-model only applies with --engine claude or codex+claude."
+        )
+    if commands:
+        from pdf_refinery.llm_engine import claude_available, codex_available
 
-        if not codex_available():
+        available = {"codex": codex_available, "claude": claude_available}
+        installs = {"codex": "the Codex CLI", "claude": "Claude Code"}
+        missing = [c for c in commands if not available[c]()]
+        if missing:
             raise click.UsageError(
-                "--engine codex needs the 'codex' command, which is not on "
-                "PATH. Install the Codex CLI and log in, or use --engine paddle."
+                f"--engine {engine} needs {' and '.join(repr(c) for c in missing)}, "
+                f"not on PATH. Install {' and '.join(installs[c] for c in missing)} "
+                "and log in, or use --engine paddle."
             )
         if len(lang) > 1:
             # Each language builds its own engine, so each would send every
             # page to the model again -- for a transcription that does not
             # depend on the language at all.
             raise click.UsageError(
-                "--engine codex takes a single -l: the model reads every "
+                f"--engine {engine} takes a single -l: the model reads every "
                 "script on the page, and each extra language would send every "
                 "page again."
             )
@@ -256,4 +277,5 @@ def ocr(input_file: Path, output: Path | None, lang: tuple[str, ...], dpi: int,
         auto_rotate=auto_rotate,
         engine=engine,
         codex_model=codex_model,
+        claude_model=claude_model,
     )

@@ -8,8 +8,10 @@ description: Make a scanned PDF searchable with the pdf-refinery CLI, installing
 `pdf-refinery` renders each page, reads it with PaddleOCR, and writes an
 invisible text layer over the original image, so the PDF looks the same but
 becomes searchable and selectable. It can optionally have a vision model read
-the text through the Codex CLI instead (`--engine codex`), which is much more
-accurate on Korean but sends every page image to OpenAI.
+the text instead, which is much more accurate on Korean but sends every page
+image off the machine: through the Codex CLI to OpenAI (`--engine codex`),
+through Claude Code to Anthropic (`--engine claude`), or to both, voting
+between them (`--engine codex+claude`).
 
 Work through the steps in order. A book takes one to three hours, so every
 choice that can be checked on two pages is checked there first.
@@ -85,16 +87,34 @@ doubles the time.
 - `--engine codex`: PaddleOCR still finds the lines, but GPT-6 Sol reads the
   text through the Codex CLI. On the project's Korean benchmark, character
   errors fell from 22 to 7 and word errors from 71 to 1 on a leaflet.
-  Before using it:
-  - **ask the user**, because every page image is sent to OpenAI;
-  - check `codex login status` reports a login;
-  - give the cost: about $3 per 300 pages at API list prices, or usage
-    against the ChatGPT plan when Codex is logged in that way;
-  - allow for time: add 20–35 s per page;
-  - keep a single `-l`; the CLI refuses more than one with this engine.
+- `--engine claude`: the same, with the model (Opus by default) reached
+  through Claude Code. The most accurate engine on the benchmark: no
+  character errors on any of the three corpora, and 2 word errors on the
+  book where Codex made 16. `--claude-model sonnet` is faster and nearly as
+  good.
+- `--engine codex+claude`: both models read every page at once and vote
+  line by line, with PaddleOCR settling what they disagree on. On the
+  benchmark it matched `claude` alone and did not beat it, while sending
+  every page to both providers. Offer it only when the user wants a second
+  opinion and accepts both.
 
-  Do not pass `--codex-model gpt-6-luna` to save money. It rewrote Korean
-  text into different plausible words and did worse than PaddleOCR alone.
+Before using any of the three:
+
+- **ask the user**, naming the provider: every page image is sent to OpenAI
+  (`codex`), to Anthropic (`claude`), or to both (`codex+claude`). Agreement
+  to one provider is not agreement to the other;
+- check the tool is logged in: `codex login status` for Codex,
+  `claude auth status` for Claude Code;
+- give the cost: for Codex, about $3 per 300 pages at API list prices, or
+  usage against the ChatGPT plan when Codex is logged in that way; for
+  Claude Code, usage against the Claude plan or API key it is logged in with;
+  `codex+claude` spends both;
+- allow for time: add 5–20 s per page over PaddleOCR alone, about the
+  same for all three (the two calls of `codex+claude` run at once);
+- keep a single `-l`; the CLI refuses more than one with these engines.
+
+Do not pass `--codex-model gpt-6-luna` to save money. It rewrote Korean
+text into different plausible words and did worse than PaddleOCR alone.
 
 ## 4. Trial run on two pages
 
@@ -139,7 +159,9 @@ pdf-refinery ocr -l korean --sidecar output.txt -o output.pdf input.pdf
 - Pass on any warnings the run printed:
   - lines too small to place;
   - characters above U+FFFF that could not be encoded;
-  - `this page keeps PaddleOCR's text` from a failed Codex call.
+  - `this page keeps PaddleOCR's text` from a failed model call;
+  - `this page is read by codex alone` (or `claude alone`) when one of the
+    two calls of `codex+claude` failed.
 - Tell the user where the PDF and the transcript are, which language and
   engine were used, and how many pages were skipped as already searchable.
 

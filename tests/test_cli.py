@@ -276,6 +276,102 @@ class TestEngineOption:
         assert "--engine codex" in result.output
         mock_pipeline.assert_not_called()
 
+    def test_paddle_passes_no_claude_model(self, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, ["ocr", str(tmp_pdf), "-l", "en"])
+        assert result.exit_code == 0
+        assert mock_pipeline.call_args.kwargs["claude_model"] is None
+
+    @patch("pdf_refinery.llm_engine.claude_available", return_value=True)
+    def test_claude_and_its_model_reach_the_pipeline(self, _, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "korean",
+            "--engine", "claude", "--claude-model", "sonnet",
+        ])
+        assert result.exit_code == 0, result.output
+        kw = mock_pipeline.call_args.kwargs
+        assert (kw["engine"], kw["claude_model"], kw["codex_model"]) == (
+            "claude", "sonnet", None,
+        )
+
+    @patch("pdf_refinery.llm_engine.claude_available", return_value=False)
+    def test_claude_without_the_command_fails_up_front(self, _, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(
+            main, ["ocr", str(tmp_pdf), "-l", "korean", "--engine", "claude"]
+        )
+        assert result.exit_code != 0
+        assert "'claude', not on PATH" in result.output
+        mock_pipeline.assert_not_called()
+
+    @pytest.mark.parametrize("engine", ["codex", "claude", "codex+claude"])
+    @patch("pdf_refinery.llm_engine.claude_available", return_value=True)
+    @patch("pdf_refinery.llm_engine.codex_available", return_value=True)
+    def test_every_model_engine_takes_one_language(
+        self, _codex, _claude, mock_pipeline, tmp_pdf, engine
+    ):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "korean", "-l", "en", "--engine", engine,
+        ])
+        assert result.exit_code != 0
+        assert "single -l" in result.output
+        mock_pipeline.assert_not_called()
+
+    def test_a_claude_model_without_a_claude_engine_is_refused(self, mock_pipeline, tmp_pdf):
+        for engine in ("paddle", "codex"):
+            with patch("pdf_refinery.llm_engine.codex_available", return_value=True):
+                result = CliRunner().invoke(main, [
+                    "ocr", str(tmp_pdf), "-l", "en", "--engine", engine,
+                    "--claude-model", "opus",
+                ])
+            assert result.exit_code != 0
+            assert "--claude-model only applies" in result.output
+        mock_pipeline.assert_not_called()
+
+    def test_a_codex_model_with_the_claude_engine_is_refused(self, mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "en", "--engine", "claude",
+            "--codex-model", "gpt-6-sol",
+        ])
+        assert result.exit_code != 0
+        assert "--codex-model only applies" in result.output
+        mock_pipeline.assert_not_called()
+
+    @patch("pdf_refinery.llm_engine.claude_available", return_value=True)
+    @patch("pdf_refinery.llm_engine.codex_available", return_value=True)
+    def test_the_consensus_engine_takes_both_models(self, _codex, _claude,
+                                                     mock_pipeline, tmp_pdf):
+        result = CliRunner().invoke(main, [
+            "ocr", str(tmp_pdf), "-l", "korean", "--engine", "codex+claude",
+            "--codex-model", "gpt-6-luna", "--claude-model", "sonnet",
+        ])
+        assert result.exit_code == 0, result.output
+        kw = mock_pipeline.call_args.kwargs
+        assert (kw["engine"], kw["codex_model"], kw["claude_model"]) == (
+            "codex+claude", "gpt-6-luna", "sonnet",
+        )
+
+    @pytest.mark.parametrize("has_codex,has_claude,named", [
+        (False, True, "'codex', not on PATH"),
+        (True, False, "'claude', not on PATH"),
+        (False, False, "'codex' and 'claude', not on PATH"),
+    ])
+    def test_the_consensus_engine_needs_both_commands(
+        self, mock_pipeline, tmp_pdf, has_codex, has_claude, named
+    ):
+        with patch("pdf_refinery.llm_engine.codex_available", return_value=has_codex), \
+                patch("pdf_refinery.llm_engine.claude_available", return_value=has_claude):
+            result = CliRunner().invoke(main, [
+                "ocr", str(tmp_pdf), "-l", "korean", "--engine", "codex+claude",
+            ])
+        assert result.exit_code != 0
+        assert named in result.output
+        mock_pipeline.assert_not_called()
+
+    def test_help_names_every_engine(self, mock_pipeline):
+        # pdf-bindery reads this to find out which engines it may offer.
+        result = CliRunner().invoke(main, ["ocr", "--help"])
+        assert result.exit_code == 0
+        assert "[claude|codex|codex+claude|paddle]" in result.output
+
 
 class TestStartupCost:
     """--help must not pay for PaddleOCR's import or its network check."""

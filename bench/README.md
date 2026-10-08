@@ -43,6 +43,13 @@ scripts/bench.py run baseline --set dpi=400 --name baseline-400dpi
 scripts/bench.py table                    # compare everything measured so far
 ```
 
+The model variants (`codex-sol`, `claude-opus`, `claude-sonnet`,
+`codex+claude`) send the corpus to OpenAI or Anthropic and spend the account's
+usage, so `--all` leaves them out; run them by name. Each such run keeps what
+every model answered in `_work/<corpus>.<variant>.transcripts.jsonl`, so a
+change to how transcriptions are aligned or merged can be measured again on the
+same answers without asking the models twice.
+
 Each run reports two separate numbers, because they fail independently:
 
 - **ocr** — the strings the recogniser returned (from `--sidecar`).

@@ -108,11 +108,17 @@ VARIANTS: dict[str, dict | Callable] = {
     # Sends every page to OpenAI through the Codex CLI, so it is not run by
     # --all's habit of measuring everything cheaply; ask for it by name.
     "codex-sol": {"engine": "codex", "codex_model": "gpt-6-sol"},
+    # The same through Claude Code, to Anthropic.
+    "claude-opus": {"engine": "claude", "claude_model": "opus"},
+    "claude-sonnet": {"engine": "claude", "claude_model": "sonnet"},
+    # Both, voting; every page goes to both providers.
+    "codex+claude": {"engine": "codex+claude", "codex_model": "gpt-6-sol",
+                     "claude_model": "opus"},
 }
 
 # Variants --all leaves out: each costs money and sends the corpus off the
 # machine, which is a decision to take per run rather than by default.
-EXTERNAL_VARIANTS = frozenset({"codex-sol"})
+EXTERNAL_VARIANTS = frozenset({"codex-sol", "claude-opus", "claude-sonnet", "codex+claude"})
 
 
 def resolve_variant(name: str, corpus: "Corpus") -> dict | None:
@@ -253,7 +259,27 @@ def _child_run(config: dict) -> None:
     """
     import resource
 
+    from pdf_refinery import llm_engine
     from pdf_refinery.pipeline import run_ocr_pipeline
+
+    # Keep what each model answered, next to the sidecar. A model run cannot
+    # be repeated for free, and with the raw transcriptions a change to how
+    # they are aligned or merged can be measured again without asking anyone.
+    transcripts = config.pop("transcripts", None)
+    if transcripts:
+        def recording(call, name):
+            def wrapper(image, model):
+                text = call(image, model=model)
+                with open(transcripts, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(
+                        {"engine": name, "model": model, "text": text},
+                        ensure_ascii=False,
+                    ) + "\n")
+                return text
+            return wrapper
+
+        llm_engine.transcribe_with_codex = recording(llm_engine.transcribe_with_codex, "codex")
+        llm_engine.transcribe_with_claude = recording(llm_engine.transcribe_with_claude, "claude")
 
     started = time.perf_counter()
     run_ocr_pipeline(**{
@@ -296,11 +322,15 @@ def run_variant(name: str, corpus: Corpus, overrides: dict, workdir: Path) -> di
     for stale in (output, sidecar):
         stale.unlink(missing_ok=True)
 
+    transcripts = workdir / f"{corpus.name}.{name}.transcripts.jsonl"
+    transcripts.unlink(missing_ok=True)
+
     langs = overrides.pop("langs", None) or [_default_lang(corpus)]
     config = {
         "input_path": str(corpus.pdf),
         "output_path": str(output),
         "sidecar": str(sidecar),
+        "transcripts": str(transcripts),
         "langs": langs,
         "pages": ",".join(str(n) for n in pages),
         # The corpus PDFs carry a text layer from whatever OCR made them, so
@@ -346,7 +376,11 @@ def run_variant(name: str, corpus: Corpus, overrides: dict, workdir: Path) -> di
         "variant": name,
         "corpus": corpus.name,
         "config": {k: v for k, v in config.items()
-                   if k not in ("input_path", "output_path", "sidecar")},
+                   if k not in ("input_path", "output_path", "sidecar", "transcripts")},
+        # A model call that failed leaves its page with PaddleOCR's text and
+        # the run still succeeds, so the score alone would hide it.
+        "warnings": [line for line in proc.stderr.splitlines()
+                     if line.startswith("Warning:")],
         "seconds": cost["seconds"],
         "seconds_per_page": cost["seconds"] / len(pages),
         "peak_rss_mb": cost["peak_rss_mb"],
@@ -550,6 +584,8 @@ def main() -> int:
             print(f"  ocr CER {record['ocr']['cer_nospace']:.4f}  "
                   f"pdf CER {record['pdf']['cer_nospace']:.4f}  "
                   f"{record['seconds_per_page']:.1f}s/page  -> {path.name}", flush=True)
+            for warning in record["warnings"]:
+                print(f"  {warning}", flush=True)
 
     print()
     print_table(load_results(selected[0].name if len(selected) == 1 else None))

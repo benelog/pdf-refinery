@@ -15,17 +15,25 @@ character, which is what makes the alignment reliable -- and where they do not
 agree enough for a line, that line keeps PaddleOCR's text rather than trust an
 alignment that may have gone wrong.
 
-The model is reached through the Codex CLI, so it runs on whatever account
-Codex is logged in with and needs no API key here. Every page image is sent to
-OpenAI; that is the whole cost of the accuracy, and the reason this is an
-option rather than the default.
+The model is reached through a coding agent's command-line tool -- the Codex
+CLI for OpenAI's models, Claude Code for Anthropic's -- so it runs on whatever
+account that tool is logged in with and needs no API key here. Every page
+image is sent to that provider; that is the whole cost of the accuracy, and the
+reason this is an option rather than the default.
+
+The consensus engine asks both and votes line by line, character by character,
+with PaddleOCR's own reading as the arbiter where the two models disagree. See
+:func:`merge_readings`.
 """
 
+import base64
 import difflib
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
@@ -43,6 +51,20 @@ CODEX_REASONING_EFFORT = "low"
 # A page takes 15-40 seconds. Ten minutes is long enough never to cut off a
 # slow answer, and short enough that a hung call does not stall a book.
 CODEX_TIMEOUT_SECONDS = 600
+
+# An alias, not a dated model name: Claude Code resolves it to the newest Opus
+# the account can use, so the default does not go stale with each release.
+DEFAULT_CLAUDE_MODEL = "opus"
+
+# Pinned rather than inherited. Claude Code otherwise takes the effort level
+# from its settings or from CLAUDE_EFFORT -- which a parent Claude Code session
+# exports to everything it runs, at "high" -- so the same command would think
+# for a different length depending on where it was started. Low matches the
+# Codex setting above, where high bought nothing measurable for transcription.
+CLAUDE_EFFORT = "low"
+
+# The same budget as Codex, for the same reason.
+CLAUDE_TIMEOUT_SECONDS = 600
 
 TRANSCRIPTION_PROMPT = """\
 The attached image is one page of a scanned document. Transcribe every piece \
@@ -71,6 +93,11 @@ MIN_LINE_AGREEMENT = 0.5
 def codex_available() -> bool:
     """Whether the ``codex`` command can be run at all."""
     return shutil.which("codex") is not None
+
+
+def claude_available() -> bool:
+    """Whether the ``claude`` command (Claude Code) can be run at all."""
+    return shutil.which("claude") is not None
 
 
 def _owners(line_chars: list[int], line_text: str, page_chars: list[int], page_text: str):
@@ -180,6 +207,79 @@ def align_transcription(lines: list[str], transcription: str) -> list[str | None
     return out
 
 
+def _tight(text: str) -> str:
+    return "".join(text.split())
+
+
+def merge_readings(paddle: str, a: str | None, b: str | None) -> str | None:
+    """Combine two models' readings of one line, with PaddleOCR as arbiter.
+
+    Args:
+        paddle: What PaddleOCR read in the box.
+        a: The preferred model's text for the line, as
+            :func:`align_transcription` returns it: a string, None for "keep
+            PaddleOCR's text", or ``""`` for "drop the line". Ties go to it.
+        b: The other model's text for the line, in the same form.
+
+    Returns:
+        The line's text, None to keep PaddleOCR's, or ``""`` to drop the line.
+
+    Where both models read the line the same way, that is the answer. Where
+    only one has a usable reading -- the other found nothing there, or text
+    that did not resemble the box -- that one is used, as its engine alone
+    would. Where they disagree, the two readings are aligned character by
+    character; the stretches they agree on are kept, and each stretch they
+    disagree on is settled by which version leaves the whole line closer to
+    what PaddleOCR read. Two models disagreeing about a character is exactly
+    when a third, independent reading is worth asking.
+
+    Closeness is measured with the spaces removed, so a disagreement that is
+    only about spacing always ties and goes to ``a``. That is deliberate:
+    spacing is the one thing PaddleOCR is worst at -- it runs the words of
+    large type together -- and letting it vote would pull a correctly spaced
+    reading back towards ``A버튼(라이트버튼)``, which a word search for
+    ``버튼`` does not find. It is also why two readings differing only in
+    spacing are not treated as agreeing: the space is the part that decides
+    whether the word can be searched for, so it is voted on like any other
+    character, and settled by the model that spaces better.
+
+    The arbiter has known biases of its own. PaddleOCR's Korean dictionary
+    has no corner brackets and reads ``톰`` as ``통`` more often than not, so
+    where one model has the right character and the other agrees with
+    PaddleOCR's habit, the vote goes the wrong way. It only gets the chance
+    when the two models already disagree.
+
+    A line is dropped only when both models say to drop it.
+    """
+    if not a and not b:
+        return "" if a == "" and b == "" else None
+    if not b:
+        return a
+    if not a:
+        return b
+    if a == b:
+        return a
+
+    target = _tight(paddle)
+
+    def closeness(text: str) -> float:
+        return difflib.SequenceMatcher(None, target, _tight(text), autojunk=False).ratio()
+
+    merged: list[str] = []
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    for op, a1, a2, b1, b2 in matcher.get_opcodes():
+        if op == "equal":
+            merged.append(a[a1:a2])
+            continue
+        # Each disagreement is judged in the context of the line as decided so
+        # far, with the preferred reading standing in for what is still ahead.
+        head, tail = "".join(merged), a[a2:]
+        with_a = closeness(head + a[a1:a2] + tail)
+        with_b = closeness(head + b[b1:b2] + tail)
+        merged.append(b[b1:b2] if with_b > with_a else a[a1:a2])
+    return " ".join("".join(merged).split())
+
+
 def transcribe_with_codex(image: np.ndarray, model: str = DEFAULT_CODEX_MODEL) -> str:
     """Have the model transcribe ``image`` (RGB) through the Codex CLI.
 
@@ -225,7 +325,152 @@ def transcribe_with_codex(image: np.ndarray, model: str = DEFAULT_CODEX_MODEL) -
         return text
 
 
-class CodexEngine:
+def _png_base64(image: np.ndarray) -> str:
+    import cv2
+
+    ok, png = cv2.imencode(".png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise RuntimeError("the page could not be encoded as PNG")
+    return base64.b64encode(png.tobytes()).decode("ascii")
+
+
+def _claude_result(stdout: str) -> dict | None:
+    """The final ``result`` event of a stream-json run, or None if absent."""
+    result = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event
+    return result
+
+
+def transcribe_with_claude(image: np.ndarray, model: str = DEFAULT_CLAUDE_MODEL) -> str:
+    """Have the model transcribe ``image`` (RGB) through Claude Code.
+
+    The image goes in on stdin as a stream-json user message, inline and
+    base64-encoded, so nothing is written to disk and the model needs no tool
+    to read a file -- which is why it can be given none at all.
+
+    Raises:
+        RuntimeError: If Claude Code fails, times out, reports an error or
+            answers with nothing.
+    """
+    message = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png",
+                    "data": _png_base64(image),
+                }},
+                {"type": "text", "text": TRANSCRIPTION_PROMPT},
+            ],
+        },
+    }
+    command = [
+        "claude", "-p",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        # stream-json output requires it; the events are parsed, not shown.
+        "--verbose",
+        "--model", model,
+        "--effort", CLAUDE_EFFORT,
+        # No tools, no saved session, and none of the user's settings, hooks
+        # or MCP servers: the call reads one image and answers, and nothing
+        # it does should touch the disk, linger in the session list, or
+        # depend on how this machine's Claude Code happens to be configured.
+        "--tools", "",
+        "--no-session-persistence",
+        "--setting-sources", "",
+        "--strict-mcp-config",
+    ]
+    # An empty working directory, so the project the user ran this from --
+    # its CLAUDE.md, its git status -- is not read into the model's context.
+    with tempfile.TemporaryDirectory(prefix="pdf-refinery-") as workdir:
+        try:
+            proc = subprocess.run(
+                command, input=json.dumps(message) + "\n", capture_output=True,
+                text=True, cwd=workdir, timeout=CLAUDE_TIMEOUT_SECONDS,
+                env={**os.environ, "NO_COLOR": "1"},
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"claude did not answer within {CLAUDE_TIMEOUT_SECONDS}s") from None
+    result = _claude_result(proc.stdout)
+    if proc.returncode != 0:
+        # Claude Code reports most failures -- not logged in, a usage limit,
+        # an unknown model -- as the result text, not on stderr.
+        detail = (
+            [str(result.get("result") or result.get("subtype"))] if result
+            else (proc.stderr or proc.stdout).strip().splitlines()
+        )
+        raise RuntimeError(
+            f"claude exited {proc.returncode}: {detail[-1] if detail else 'no output'}"
+        )
+    if result is None:
+        raise RuntimeError("claude finished without a result")
+    if result.get("is_error") or result.get("subtype") != "success":
+        raise RuntimeError(
+            f"claude reported an error ({result.get('subtype')}): "
+            f"{str(result.get('result') or '').strip() or 'no detail'}"
+        )
+    text = result.get("result")
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("claude returned an empty transcription")
+    return text
+
+
+def _with_lines(results: list[OcrResult], texts: list[str | None]) -> list[OcrResult]:
+    """PaddleOCR's boxes with the given text; None keeps its own, ``""`` drops."""
+    return [
+        OcrResult(text=r.text if t is None else t, confidence=r.confidence, bbox=r.bbox)
+        for r, t in zip(results, texts)
+        if t != ""
+    ]
+
+
+class _ModelEngine:
+    """PaddleOCR's boxes, with the text read by one model."""
+
+    def __init__(self, lang: str, model: str, **paddle_options):
+        self._paddle = PaddleEngine(lang=lang, **paddle_options)
+        self._model = model
+        self.pages_kept_as_paddle = 0
+
+    def _transcribe(self, image: np.ndarray) -> str:
+        raise NotImplementedError
+
+    def recognize(
+        self, image: np.ndarray, confidence: float = 0.5,
+        rendered: np.ndarray | None = None,
+    ) -> list[OcrResult]:
+        results = self._paddle.recognize(image, confidence=confidence)
+        if not results:
+            # No boxes, so nothing the transcription could be placed on.
+            return results
+        try:
+            # The model reads the page as rendered, not as thresholded for
+            # PaddleOCR: on bench/sample-1, the binarized page cost GPT-6 Sol
+            # 12 and 13 character errors over two runs against 7 for the
+            # greyscale, nearly all of them dense Hangul syllables losing a
+            # stroke.
+            seen = image if rendered is None else rendered
+            transcription = self._transcribe(seen)
+        except RuntimeError as exc:
+            # One failed call must not end a run over a whole book: the page
+            # still gets PaddleOCR's reading, and the user is told.
+            self.pages_kept_as_paddle += 1
+            click.echo(f"Warning: {exc}; this page keeps PaddleOCR's text.", err=True)
+            return results
+        return _with_lines(
+            results, align_transcription([r.text for r in results], transcription)
+        )
+
+
+class CodexEngine(_ModelEngine):
     """PaddleOCR's boxes, with the text read by a model through Codex."""
 
     def __init__(self, lang: str = "en", codex_model: str = DEFAULT_CODEX_MODEL,
@@ -238,9 +483,84 @@ class CodexEngine:
             codex_model: The model Codex runs.
             **paddle_options: Passed to :class:`PaddleEngine`.
         """
+        super().__init__(lang, codex_model, **paddle_options)
+
+    def _transcribe(self, image: np.ndarray) -> str:
+        return transcribe_with_codex(image, model=self._model)
+
+
+class ClaudeEngine(_ModelEngine):
+    """PaddleOCR's boxes, with the text read by a model through Claude Code."""
+
+    def __init__(self, lang: str = "en", claude_model: str = DEFAULT_CLAUDE_MODEL,
+                 **paddle_options):
+        """Build the engine.
+
+        Args:
+            lang: PaddleOCR language code, for detection and the fallback
+                reading. The model itself is not told the language.
+            claude_model: The model Claude Code runs, by alias or full name.
+            **paddle_options: Passed to :class:`PaddleEngine`.
+        """
+        super().__init__(lang, claude_model, **paddle_options)
+
+    def _transcribe(self, image: np.ndarray) -> str:
+        return transcribe_with_claude(image, model=self._model)
+
+
+# Which model's reading wins a vote PaddleOCR cannot settle -- above all, every
+# disagreement about spacing. Claude, because it was the better reader alone
+# on every corpus in bench/: Opus through Claude Code made 0, 0 and 0
+# character errors and 2, 0 and 4 word errors on sample-1, -2 and -3, where
+# GPT-6 Sol through Codex made 7, 1 and 0 and 16, 1 and 4.
+CONSENSUS_PREFERRED = "claude"
+
+
+class ConsensusEngine:
+    """PaddleOCR's boxes, with the text voted on by two models.
+
+    Both models transcribe every page, at the same time, so a page takes about
+    as long as the slower of the two calls rather than both in turn. Each
+    transcription is aligned to PaddleOCR's lines on its own, and the two are
+    then merged line by line with :func:`merge_readings`.
+
+    A page on which one call fails is read by the other model alone, exactly
+    as its own engine would read it; only when both fail does the page keep
+    PaddleOCR's text.
+    """
+
+    def __init__(self, lang: str = "en", codex_model: str = DEFAULT_CODEX_MODEL,
+                 claude_model: str = DEFAULT_CLAUDE_MODEL, **paddle_options):
+        """Build the engine.
+
+        Args:
+            lang: PaddleOCR language code, for detection and the fallback
+                reading. Neither model is told the language.
+            codex_model: The model Codex runs.
+            claude_model: The model Claude Code runs.
+            **paddle_options: Passed to :class:`PaddleEngine`.
+        """
         self._paddle = PaddleEngine(lang=lang, **paddle_options)
-        self._model = codex_model
+        self._models = {"codex": codex_model, "claude": claude_model}
         self.pages_kept_as_paddle = 0
+        self.pages_read_by_one_model = 0
+
+    def _transcribe_both(self, image: np.ndarray) -> tuple[dict[str, str], dict[str, str]]:
+        """Both models' transcriptions, and the error of each call that failed."""
+        calls = {"codex": transcribe_with_codex, "claude": transcribe_with_claude}
+        readings: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+            futures = {
+                name: pool.submit(call, image, model=self._models[name])
+                for name, call in calls.items()
+            }
+            for name, future in futures.items():
+                try:
+                    readings[name] = future.result()
+                except RuntimeError as exc:
+                    errors[name] = str(exc)
+        return readings, errors
 
     def recognize(
         self, image: np.ndarray, confidence: float = 0.5,
@@ -248,24 +568,33 @@ class CodexEngine:
     ) -> list[OcrResult]:
         results = self._paddle.recognize(image, confidence=confidence)
         if not results:
-            # No boxes, so nothing the transcription could be placed on.
             return results
-        try:
-            # The model reads the page as rendered, not as thresholded for
-            # PaddleOCR: on bench/sample-1, the binarized page cost it 12 and
-            # 13 character errors over two runs against 7 for the greyscale,
-            # nearly all of them dense Hangul syllables losing a stroke.
-            seen = image if rendered is None else rendered
-            transcription = transcribe_with_codex(seen, model=self._model)
-        except RuntimeError as exc:
-            # One failed call must not end a run over a whole book: the page
-            # still gets PaddleOCR's reading, and the user is told.
+        # The page as rendered, for the reason given in _ModelEngine.
+        seen = image if rendered is None else rendered
+        readings, errors = self._transcribe_both(seen)
+        lines = [r.text for r in results]
+
+        if not readings:
             self.pages_kept_as_paddle += 1
-            click.echo(f"Warning: {exc}; this page keeps PaddleOCR's text.", err=True)
+            click.echo(
+                f"Warning: {'; '.join(errors.values())}; this page keeps "
+                "PaddleOCR's text.",
+                err=True,
+            )
             return results
-        texts = align_transcription([r.text for r in results], transcription)
-        return [
-            OcrResult(text=r.text if t is None else t, confidence=r.confidence, bbox=r.bbox)
-            for r, t in zip(results, texts)
-            if t != ""
-        ]
+        if errors:
+            (alone, transcription), = readings.items()
+            self.pages_read_by_one_model += 1
+            click.echo(
+                f"Warning: {'; '.join(errors.values())}; this page is read by "
+                f"{alone} alone.",
+                err=True,
+            )
+            return _with_lines(results, align_transcription(lines, transcription))
+
+        other = "claude" if CONSENSUS_PREFERRED == "codex" else "codex"
+        a = align_transcription(lines, readings[CONSENSUS_PREFERRED])
+        b = align_transcription(lines, readings[other])
+        return _with_lines(
+            results, [merge_readings(*line) for line in zip(lines, a, b)]
+        )

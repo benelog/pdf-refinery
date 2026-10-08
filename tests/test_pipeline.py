@@ -165,6 +165,53 @@ class TestRunOcrPipeline:
         assert call.kwargs["rendered"] is page
         assert set(np.unique(call.args[0])) <= {0, 255}
 
+    @pytest.mark.parametrize("engine,options,expected", [
+        ("codex", {}, {"codex_model": "gpt-6-sol"}),
+        ("claude", {}, {"claude_model": "opus"}),
+        ("claude", {"claude_model": "sonnet"}, {"claude_model": "sonnet"}),
+        ("codex+claude", {"codex_model": "gpt-6-luna"},
+         {"codex_model": "gpt-6-luna", "claude_model": "opus"}),
+    ])
+    @patch("pdf_refinery.pipeline.overlay_text_on_page")
+    @patch("pdf_refinery.pdf_document.Page.to_image")
+    @patch("pdf_refinery.pipeline.create_engine")
+    def test_model_engines_get_their_models(
+        self, mock_engine_cls, mock_to_image, mock_overlay, tmp_pdf, tmp_path,
+        engine, options, expected,
+    ):
+        mock_engine_cls.return_value.recognize.return_value = []
+        mock_to_image.return_value = np.full((792, 612, 3), 128, dtype=np.uint8)
+        mock_overlay.return_value = OverlayStats(0, 0)
+
+        run_ocr_pipeline(
+            input_path=tmp_pdf, output_path=tmp_path / "out.pdf",
+            langs=["korean"], engine=engine, **options,
+        )
+
+        kwargs = mock_engine_cls.call_args.kwargs
+        assert mock_engine_cls.call_args.args == (engine,)
+        assert {k: kwargs[k] for k in ("codex_model", "claude_model") if k in kwargs} == expected
+
+    @pytest.mark.parametrize("engine,line", [
+        ("paddle", None),
+        ("codex", "Engine: codex (gpt-6-sol); page images are sent to OpenAI."),
+        ("claude", "Engine: claude (opus); page images are sent to Anthropic."),
+        ("codex+claude", "Engine: codex+claude (gpt-6-sol, opus); page images "
+                         "are sent to OpenAI and Anthropic."),
+    ])
+    @patch("pdf_refinery.pipeline.create_engine")
+    def test_the_run_says_where_page_images_go(
+        self, mock_engine_cls, tmp_pdf, tmp_path, capsys, engine, line,
+    ):
+        mock_engine_cls.return_value.recognize.return_value = []
+        run_ocr_pipeline(
+            input_path=tmp_pdf, output_path=tmp_path / "out.pdf",
+            langs=["korean"], engine=engine, verbose=True,
+        )
+        out = capsys.readouterr().out.splitlines()
+        engine_lines = [o for o in out if o.startswith("Engine:")]
+        assert engine_lines == ([line] if line else [])
+
     def test_rejects_output_equal_to_input(self, tmp_pdf):
         with pytest.raises(click.ClickException):
             run_ocr_pipeline(input_path=tmp_pdf, output_path=tmp_pdf)

@@ -44,7 +44,8 @@ language also downloads 100–150 MB of models to `~/.paddlex`.
 
 `skills/pdf-ocr/SKILL.md` teaches a coding agent to use this tool. It installs
 the tool if it is missing, establishes the language before running, tries two
-pages first, and asks before sending pages to OpenAI with `--engine codex`.
+pages first, and asks before sending pages to OpenAI or Anthropic with one of
+the model engines.
 Enable it per project by linking it into the project's skill directories.
 Each agent then offers it only inside that project:
 
@@ -102,8 +103,9 @@ pdf-refinery ocr -l korean --resume scanned_book.pdf
 | `--preprocess` | `binarize` | `binarize` or `none` (see [Tuning](#tuning)) |
 | `--rec-model` | per language | Override PaddleOCR's recognition model |
 | `--auto-rotate` | off | Read pages scanned sideways or upside down |
-| `--engine` | `paddle` | `codex` has a vision model read the text (see [Reading with a model](#reading-with-a-model-through-codex)) |
-| `--codex-model` | `gpt-6-sol` | Model the `codex` engine runs |
+| `--engine` | `paddle` | `codex`, `claude` or `codex+claude` has a vision model read the text (see [Reading with a model](#reading-with-a-model)) |
+| `--codex-model` | `gpt-6-sol` | Model the `codex` and `codex+claude` engines run |
+| `--claude-model` | `opus` | Model the `claude` and `codex+claude` engines run |
 | `--textline-orientation` | off | Let the recogniser turn individual lines |
 | `--unwarp` | off | Flatten page curvature before detection |
 | `--force-ocr` | off | Re-OCR pages that already contain text |
@@ -268,17 +270,24 @@ not a degraded result, it is an empty one — and the run still exits 0 and writ
 a believable-looking PDF. The reverse is harmless, because the Korean model's
 dictionary contains Latin. That asymmetry is why `-l` has no default.
 
-### Reading with a model through Codex
+### Reading with a model
 
-`--engine codex` keeps PaddleOCR's line positions but has a vision model read
-the text, through the [Codex CLI](https://github.com/openai/codex). Codex must
-be installed and logged in; the run uses whatever account it is logged in with.
+`--engine codex` and `--engine claude` keep PaddleOCR's line positions but have
+a vision model read the text: GPT-6 Sol through the
+[Codex CLI](https://github.com/openai/codex), or Opus through
+[Claude Code](https://github.com/anthropics/claude-code). The tool must be
+installed and logged in; the run uses whatever account it is logged in with,
+and needs no API key of its own. `--engine codex+claude` asks both.
 
 ```bash
+pdf-refinery ocr -l korean --engine claude scanned_book.pdf
 pdf-refinery ocr -l korean --engine codex scanned_book.pdf
+pdf-refinery ocr -l korean --engine codex+claude scanned_book.pdf
 ```
 
-**Every page image is sent to OpenAI.** That is why it is not the default.
+**Every page image leaves the machine**: to OpenAI with `codex`, to Anthropic
+with `claude`, and to both with `codex+claude`. That is why none of them is the
+default, and the run's first lines say where the pages are going.
 
 PaddleOCR still finds every line and reads it. The model transcribes the whole
 page, and that transcription is aligned character by character against
@@ -286,21 +295,47 @@ PaddleOCR's lines, so each box gets the model's reading of the text inside it.
 The invisible layer needs both halves: a model returns no coordinates, and
 PaddleOCR reads less well. A line whose aligned text no longer resembles what
 PaddleOCR read in that box keeps PaddleOCR's text. So does a whole page whose
-Codex call fails, with a warning, so one bad call does not end a long run.
+model call fails, with a warning, so one bad call does not end a long run.
 Specks that both readings agree hold no text are dropped.
 
 Measured over `bench/`, through the whole pipeline and read back out of the
-output PDF:
+output PDF (character errors ignore spacing; word errors do not):
 
 | | sample-1 chars / words | sample-2 chars / words | sample-3 chars / words | s/page |
 |---|---|---|---|---|
 | `paddle` | 22 / 56 (6.9%) | 10 / 71 (23.5%) | 2 / 5 | 16–31 |
-| `codex`, `gpt-6-sol` | **7 / 16 (2.0%)** | **1 / 1 (0.3%)** | **0 / 4** | 23–37 |
+| `codex`, `gpt-6-sol` | 7 / 16 (2.0%) | 1 / 1 (0.3%) | 0 / 4 | 23–37 |
+| `claude`, `opus` | **0 / 2 (0.2%)** | **0 / 0 (0.0%)** | **0 / 4** | 20–35 |
+| `codex+claude` | 0 / 6 (0.7%) | **0 / 0 (0.0%)** | **0 / 4** | 18–33 |
 
-The model reads corner brackets `「」《》` that PaddleOCR's Korean dictionary
-does not have, and gets the word spacing of large type right where PaddleOCR
-runs it together. It is handed the page as rendered, not as binarized for
-PaddleOCR: thresholding cost it 12–13 character errors on `sample-1` against 7.
+The seconds include PaddleOCR's own pass. The four word errors every engine
+makes on `sample-3` are the same four.
+
+Both models read corner brackets `「」《》` that PaddleOCR's Korean dictionary
+does not have, and get the word spacing of large type right where PaddleOCR
+runs it together. They are handed the page as rendered, not as binarized for
+PaddleOCR: thresholding cost GPT-6 Sol 12–13 character errors on `sample-1`
+against 7.
+
+#### Claude
+
+`claude` was the best reader on every corpus. Opus is the default
+(`--claude-model opus`, an alias Claude Code resolves to the latest Opus).
+`--claude-model sonnet` is faster and nearly as good: on `sample-1` it made
+1 character and 3 word errors at 17 s/page, against Opus's 0 and 2 at 27 —
+a gap no bigger than Opus's own from one run to the next, which was 2 and then
+6 word errors on the same pages.
+
+The call runs Claude Code with no tools, no saved session, none of your
+settings, hooks or MCP servers, in an empty temporary directory, so nothing
+about how your Claude Code is configured changes the answer. Its effort level
+is pinned to low rather than inherited, because a parent Claude Code session
+exports its own — usually high — to every process it starts. Run through a
+Claude subscription login, it counts against that plan's usage; with an API
+key, it is billed per token, including Claude Code's own prompt of a few
+thousand tokens on every page.
+
+#### Codex
 
 At API list prices, measured tokens put a 300-page book at about **$3** with
 `gpt-6-sol` ($2 / $10 per million input / output tokens, about 2,800 image
@@ -315,6 +350,46 @@ and not by failing to read. It rewrote text into other plausible words:
 
 The model follows the prompt's instruction to transcribe as printed, but not
 perfectly: it corrected the leaflet's own typo `누루면서` to `누르면서`.
+
+#### Both: `codex+claude`
+
+Both models transcribe every page at the same time, so a page takes about as
+long as the slower call, not both in turn. Each transcription is aligned to
+PaddleOCR's lines on its own, which gives every line three readings, and they
+are combined line by line:
+
+- where the two models agree exactly, that is the line;
+- where only one of them has a usable reading, that one is used, as its own
+  engine would;
+- where they disagree, the two readings are aligned character by character.
+  What they agree on is kept, and each stretch they disagree on goes to
+  whichever version leaves the line closer to what PaddleOCR read. PaddleOCR
+  is a poor reader on its own, but it is an independent one, and a third
+  opinion is exactly what a disagreement needs;
+- a stretch PaddleOCR cannot settle goes to Claude, the better reader alone.
+  That includes every disagreement about spacing, which is measured with the
+  spaces removed, because spacing is what PaddleOCR is worst at;
+- a line is dropped only when both models say it holds no text.
+
+If one model's call fails for a page, that page is read by the other alone; if
+both fail, it keeps PaddleOCR's text. Either way the run says so.
+
+It did not beat `claude` alone here. The two models disagreed on 9 of 155 lines
+across the Korean corpora and on none of the 60 Latin ones. PaddleOCR settled
+5 of those, every time on the side of what the page prints: Codex's
+`트랜잭션`, `전자로` and `마스던` where the page has `트랜색션`, `전자론` and
+`마스딘`, and the leaflet's typo `누루면서`, which Codex had corrected. The
+other 4 went to Claude: three spacing differences, one of which Codex had
+right (`안다면 !`), and `주뼛주뼛`, which PaddleOCR misread both ways. Every
+disagreement ended on Claude's reading, so the result matched what Claude
+alone made of the same pages — and the 6 word errors on `sample-1` against the
+`claude` row's 2 are that run-to-run spread, not something the vote added.
+Preferring Codex in the ties instead would have cost 2 characters and 3 words
+on `sample-1`.
+
+So it is a second opinion that pays off only where Claude misreads and
+PaddleOCR backs Codex, which never happened on these pages. It costs both
+providers' usage, and sends every page to both.
 
 ### Pages that are not the right way up
 

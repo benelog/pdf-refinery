@@ -17,6 +17,7 @@ from pdf_refinery.ocr_engine import (
     DEFAULT_ENGINE,
     DEFAULT_PREPROCESS,
     DEFAULT_TEXTLINE_ORIENTATION,
+    ENGINE_COMMANDS,
     create_engine,
     deduplicate_results,
     detect_page_orientation,
@@ -41,6 +42,11 @@ PROGRESS_VERSION = 1
 
 # Form feed between pages, matching what ocrmypdf's sidecar emits.
 PAGE_SEPARATOR = "\f"
+
+# Who receives the page images, by the command that sends them there. Named in
+# the run's output, because it is the one fact about these engines a user must
+# not find out afterwards.
+PROVIDERS = {"codex": "OpenAI", "claude": "Anthropic"}
 
 
 def parse_page_selections(pages_str: str) -> list[tuple[int, int]]:
@@ -200,6 +206,7 @@ def run_ocr_pipeline(
     auto_rotate: bool = False,
     engine: str = DEFAULT_ENGINE,
     codex_model: str | None = None,
+    claude_model: str | None = None,
 ) -> None:
     """Run the full OCR pipeline on a scanned PDF.
 
@@ -230,8 +237,12 @@ def run_ocr_pipeline(
         auto_rotate: Detect a page scanned sideways or upside down, read it
             the right way up, and place the text back on the page as it is.
         engine: A key of :data:`ocr_engine.ENGINES`.
-        codex_model: The model the ``codex`` engine runs; its own default
-            when None. Ignored by other engines.
+        codex_model: The model the ``codex`` and ``codex+claude`` engines
+            run through Codex; their own default when None. Ignored by other
+            engines.
+        claude_model: The model the ``claude`` and ``codex+claude`` engines
+            run through Claude Code; their own default when None. Ignored by
+            other engines.
     """
     if langs is None:
         langs = ["en"]
@@ -277,12 +288,23 @@ def run_ocr_pipeline(
     click.echo(f"Languages: {', '.join(langs)}")
 
     engine_options = {}
-    if engine == "codex":
-        from pdf_refinery.llm_engine import DEFAULT_CODEX_MODEL
+    # An unknown name falls through to create_engine, which says what is known.
+    commands = ENGINE_COMMANDS.get(engine, ())
+    if commands:
+        from pdf_refinery.llm_engine import DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL
 
-        codex_model = codex_model or DEFAULT_CODEX_MODEL
-        engine_options["codex_model"] = codex_model
-        click.echo(f"Engine: codex ({codex_model}); page images are sent to OpenAI.")
+        models = []
+        if "codex" in commands:
+            engine_options["codex_model"] = codex_model or DEFAULT_CODEX_MODEL
+            models.append(engine_options["codex_model"])
+        if "claude" in commands:
+            engine_options["claude_model"] = claude_model or DEFAULT_CLAUDE_MODEL
+            models.append(engine_options["claude_model"])
+        providers = " and ".join(PROVIDERS[c] for c in commands)
+        click.echo(
+            f"Engine: {engine} ({', '.join(models)}); page images are sent "
+            f"to {providers}."
+        )
     engines = [
         create_engine(
             engine,

@@ -542,13 +542,32 @@ def _codex_engine(**options) -> TextRecogniser:
     return CodexEngine(**options)
 
 
+def _claude_engine(**options) -> TextRecogniser:
+    from pdf_refinery.llm_engine import ClaudeEngine
+
+    return ClaudeEngine(**options)
+
+
+def _consensus_engine(**options) -> TextRecogniser:
+    from pdf_refinery.llm_engine import ConsensusEngine
+
+    return ConsensusEngine(**options)
+
+
 # The engines available to build, exposed as ``--engine``.
 #
-#   paddle   PaddleOCR alone, on this machine. The default: nothing leaves it.
-#   codex    PaddleOCR's boxes with the text read by a vision model through
-#            the Codex CLI; see llm_engine. Far more accurate on the Korean
-#            corpora -- 22 character errors to 6 on sample-1, 71 word errors to
-#            2 on sample-2 -- but every page image is sent to OpenAI.
+#   paddle        PaddleOCR alone, on this machine. The default: nothing
+#                 leaves it.
+#   codex         PaddleOCR's boxes with the text read by a vision model
+#                 through the Codex CLI; see llm_engine. Far more accurate on
+#                 the Korean corpora -- 22 character errors to 7 on sample-1,
+#                 71 word errors to 1 on sample-2 -- but every page image is
+#                 sent to OpenAI.
+#   claude        The same, with the model reached through Claude Code, so
+#                 every page image is sent to Anthropic.
+#   codex+claude  Both models read every page and vote line by line, with
+#                 PaddleOCR settling what they disagree on. Every page image
+#                 goes to both providers.
 #
 # Candidates still unmeasured, and what each would be for:
 #
@@ -560,6 +579,19 @@ def _codex_engine(**options) -> TextRecogniser:
 ENGINES: dict[str, Callable[..., TextRecogniser]] = {
     "paddle": PaddleEngine,
     "codex": _codex_engine,
+    "claude": _claude_engine,
+    "codex+claude": _consensus_engine,
+}
+
+# The command-line tools each engine sends pages through, which is also the
+# list of providers that see them. An engine with none runs on this machine
+# alone. Kept here rather than in llm_engine so the CLI can validate options
+# against it without importing anything heavier than this module.
+ENGINE_COMMANDS: dict[str, tuple[str, ...]] = {
+    "paddle": (),
+    "codex": ("codex",),
+    "claude": ("claude",),
+    "codex+claude": ("codex", "claude"),
 }
 
 DEFAULT_ENGINE = "paddle"
