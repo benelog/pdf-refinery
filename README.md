@@ -321,10 +321,19 @@ against 7.
 
 `claude` was the best reader on every corpus. Opus is the default
 (`--claude-model opus`, an alias Claude Code resolves to the latest Opus).
-`--claude-model sonnet` is faster and nearly as good: on `sample-1` it made
-1 character and 3 word errors at 17 s/page, against Opus's 0 and 2 at 27 —
-a gap no bigger than Opus's own from one run to the next, which was 2 and then
-6 word errors on the same pages.
+`--claude-model sonnet` and `haiku` are faster and lighter on a plan's usage:
+
+| `--claude-model` | sample-1 chars / words | sample-2 | sample-3 | s/page |
+|---|---|---|---|---|
+| `opus` | 0 / 2 | 0 / 0 | 0 / 4 | 20–35 |
+| `sonnet` | 1 / 3 | 0 / 0 | 0 / 4 | 15–27 |
+| `haiku` | 1 / 13 | 0 / 0 | 0 / 4 | 15–25 |
+
+Sonnet's gap to Opus is no bigger than Opus's own from one run to the next,
+which was 2 and then 6 word errors on the same pages. Haiku reads the
+characters as well, but on the book page it ran words together where Sonnet
+and Opus kept the spaces, which costs a word search there. All three beat
+`codex` with `gpt-6-sol`. Each was measured once.
 
 The call runs Claude Code with no tools, no saved session, none of your
 settings, hooks or MCP servers, in an empty temporary directory, so nothing

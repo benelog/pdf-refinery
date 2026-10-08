@@ -111,6 +111,8 @@ VARIANTS: dict[str, dict | Callable] = {
     # The same through Claude Code, to Anthropic.
     "claude-opus": {"engine": "claude", "claude_model": "opus"},
     "claude-sonnet": {"engine": "claude", "claude_model": "sonnet"},
+    "claude-haiku": {"engine": "claude", "claude_model": "haiku"},
+    "codex-luna": {"engine": "codex", "codex_model": "gpt-6-luna"},
     # Both, voting; every page goes to both providers.
     "codex+claude": {"engine": "codex+claude", "codex_model": "gpt-6-sol",
                      "claude_model": "opus"},
@@ -118,7 +120,9 @@ VARIANTS: dict[str, dict | Callable] = {
 
 # Variants --all leaves out: each costs money and sends the corpus off the
 # machine, which is a decision to take per run rather than by default.
-EXTERNAL_VARIANTS = frozenset({"codex-sol", "claude-opus", "claude-sonnet", "codex+claude"})
+EXTERNAL_VARIANTS = frozenset({
+    "codex-sol", "codex-luna", "claude-opus", "claude-sonnet", "claude-haiku", "codex+claude",
+})
 
 
 def resolve_variant(name: str, corpus: "Corpus") -> dict | None:
